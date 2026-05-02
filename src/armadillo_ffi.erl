@@ -1,14 +1,14 @@
 -module(armadillo_ffi).
 
--export([open_udp/2, coerce_socket_message/1, set_active/1, parse_address/1]).
+-export([open_udp/2, coerce_socket_message/1, set_active/1, parse_address/1, send_udp/4]).
 
 open_udp(Port, Options) ->
     gen_udp:open(Port, [binary | to_erl_options(Options)]).
 
-coerce_socket_message({udp, _Socket, {A, B, C, D}, Port, Data}) ->
-    {packet, {ip_v4, A, B, C, D}, Port, Data};
-coerce_socket_message({udp, _Socket, {A, B, C, D, E, F, G, H}, Port, Data}) ->
-    {packet, {ip_v6, A, B, C, D, E, F, G, H}, Port, Data}.
+coerce_socket_message({udp, Socket, {A, B, C, D}, Port, Data}) ->
+    {packet, {peer, Socket, {ip_v4, A, B, C, D}, Port}, Data};
+coerce_socket_message({udp, Socket, {A, B, C, D, E, F, G, H}, Port, Data}) ->
+    {packet, {peer, Socket, {ip_v6, A, B, C, D, E, F, G, H}, Port}, Data}.
 
 to_erl_options(Options) ->
     lists:map(fun(A) -> to_erl_option(A) end, Options).
@@ -47,6 +47,11 @@ parse_address(Address) ->
         {error, _Reason} ->
             {error, nil}
     end.
+
+send_udp(Socket, {ip_v4, A, B, C, D}, Port, Data) ->
+    gen_udp:send(Socket, {A, B, C, D}, Port, Data);
+send_udp(Socket, {ip_v6, A, B, C, D, E, F, G, H}, Port, Data) ->
+    gen_udp:send(Socket, {A, B, C, D, E, F, G, H}, Port, Data).
 
 set_active(Socket) ->
     case inet:setopts(Socket, [{active, once}]) of

@@ -5,6 +5,7 @@ import gleam/erlang/charlist
 import gleam/erlang/process
 import gleam/option
 import gleam/otp/actor
+import gleam/otp/supervision
 import gleam/result
 
 pub type Socket
@@ -12,6 +13,10 @@ pub type Socket
 pub type IpAddress {
   IpV4(Int, Int, Int, Int)
   IpV6(Int, Int, Int, Int, Int, Int, Int, Int)
+}
+
+pub type Peer {
+  Peer(socket: Socket, ip: IpAddress, port: Int)
 }
 
 type Option {
@@ -81,7 +86,7 @@ pub type Builder(state, message) {
   Builder(
     initialise: fn(process.Subject(message)) ->
       Result(Initialised(state, message), String),
-    handler: fn(Socket, state, Message(message)) -> Next(state, message),
+    handler: fn(state, Message(message)) -> Next(state, message),
     port: Int,
     ipv6: Bool,
     reuseaddr: Bool,
@@ -93,7 +98,7 @@ pub type Builder(state, message) {
 
 pub fn new(
   state state: state,
-  handler handler: fn(Socket, state, Message(message)) -> Next(state, message),
+  handler handler: fn(state, Message(message)) -> Next(state, message),
 ) {
   Builder(
     initialise: fn(_self) { Ok(initialised(state)) },
@@ -110,7 +115,7 @@ pub fn new(
 pub fn new_with_initialiser(
   initialise initialise: fn(process.Subject(message)) ->
     Result(Initialised(state, message), String),
-  handler handler: fn(Socket, state, Message(message)) -> Next(state, message),
+  handler handler: fn(state, Message(message)) -> Next(state, message),
 ) {
   Builder(
     initialise:,
@@ -167,7 +172,7 @@ type State(state, message) {
 }
 
 pub type Message(message) {
-  Packet(ip: IpAddress, port: Int, data: BitArray)
+  Packet(peer: Peer, data: BitArray)
   User(message)
 }
 
@@ -206,10 +211,7 @@ pub fn start(
     }
   })
   |> actor.on_message(fn(state, message) {
-    let next =
-      exception.rescue(fn() {
-        builder.handler(state.socket, state.user, message)
-      })
+    let next = exception.rescue(fn() { builder.handler(state.user, message) })
 
     case next, message {
       Ok(Continue(user, selector)), User(..) -> {
@@ -260,6 +262,10 @@ pub fn start(
   |> actor.start()
 }
 
+pub fn supervised(builder: Builder(state, message)) {
+  supervision.worker(fn() { start(builder) })
+}
+
 fn udp_settings(builder: Builder(state, message)) {
   let interface = case builder.interface, builder.ipv6 {
     Loopback, False -> Address(IpV4(127, 0, 0, 1))
@@ -291,6 +297,18 @@ fn udp_selector() -> process.Selector(Message(message)) {
   process.new_selector()
   |> process.select_record(atom.create("udp"), 4, coerce_socket_message)
 }
+
+pub fn send(peer: Peer, data: BitArray) -> Result(Nil, SocketError) {
+  send_udp(peer.socket, peer.ip, peer.port, data)
+}
+
+@external(erlang, "armadillo_ffi", "send_udp")
+fn send_udp(
+  socket: Socket,
+  ip: IpAddress,
+  port: Int,
+  data: BitArray,
+) -> Result(Nil, SocketError)
 
 @external(erlang, "armadillo_ffi", "open_udp")
 fn open_udp(port: Int, options: List(Option)) -> Result(Socket, SocketError)
