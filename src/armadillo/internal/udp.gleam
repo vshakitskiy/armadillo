@@ -99,7 +99,7 @@ pub type Builder(state, message) {
 pub fn new(
   state state: state,
   handler handler: fn(state, Message(message)) -> Next(state, message),
-) {
+) -> Builder(state, message) {
   Builder(
     initialise: fn(_self) { Ok(initialised(state)) },
     handler:,
@@ -116,7 +116,7 @@ pub fn new_with_initialiser(
   initialise initialise: fn(process.Subject(message)) ->
     Result(Initialised(state, message), String),
   handler handler: fn(state, Message(message)) -> Next(state, message),
-) {
+) -> Builder(state, message) {
   Builder(
     initialise:,
     handler:,
@@ -129,11 +129,17 @@ pub fn new_with_initialiser(
   )
 }
 
-pub fn port(builder: Builder(state, message), port: Int) {
+pub fn port(
+  builder: Builder(state, message),
+  port: Int,
+) -> Builder(state, message) {
   Builder(..builder, port:)
 }
 
-pub fn bind(builder: Builder(state, message), interface: String) {
+pub fn bind(
+  builder: Builder(state, message),
+  interface: String,
+) -> Builder(state, message) {
   let address = case interface, parse_address(charlist.from_string(interface)) {
     "localhost", _ | "127.0.0.1", _ -> Loopback
     "0.0.0.0", _ -> Any
@@ -147,19 +153,27 @@ pub fn bind(builder: Builder(state, message), interface: String) {
 @external(erlang, "armadillo_ffi", "parse_address")
 fn parse_address(value: charlist.Charlist) -> Result(ip_address, Nil)
 
-pub fn with_ipv6(builder: Builder(state, message)) {
+pub fn with_ipv6(builder: Builder(state, message)) -> Builder(state, message) {
   Builder(..builder, ipv6: True)
 }
 
-pub fn reuse_address(builder: Builder(state, message)) {
+pub fn reuse_address(
+  builder: Builder(state, message),
+) -> Builder(state, message) {
   Builder(..builder, reuseaddr: True)
 }
 
-pub fn receive_buffer(builder: Builder(state, message), size: Int) {
+pub fn receive_buffer(
+  builder: Builder(state, message),
+  size: Int,
+) -> Builder(state, message) {
   Builder(..builder, recbuf: size)
 }
 
-pub fn send_buffer(builder: Builder(state, message), size: Int) {
+pub fn send_buffer(
+  builder: Builder(state, message),
+  size: Int,
+) -> Builder(state, message) {
   Builder(..builder, sndbuf: size)
 }
 
@@ -262,11 +276,13 @@ pub fn start(
   |> actor.start()
 }
 
-pub fn supervised(builder: Builder(state, message)) {
+pub fn supervised(
+  builder: Builder(state, message),
+) -> supervision.ChildSpecification(process.Subject(message)) {
   supervision.worker(fn() { start(builder) })
 }
 
-fn udp_settings(builder: Builder(state, message)) {
+fn udp_settings(builder: Builder(state, message)) -> List(Option) {
   let interface = case builder.interface, builder.ipv6 {
     Loopback, False -> Address(IpV4(127, 0, 0, 1))
     Loopback, True -> Address(IpV6(0, 0, 0, 0, 0, 0, 0, 1))
