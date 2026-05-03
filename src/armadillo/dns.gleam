@@ -400,3 +400,228 @@ fn do_decode_name(
     _ -> Error(NotEnough)
   }
 }
+
+pub fn encode(message: Message) -> BitArray {
+  case message {
+    Query(
+      id:,
+      opcode:,
+      truncated:,
+      recursion_desired:,
+      questions:,
+      authority:,
+      additional:,
+      edns:,
+    ) -> {
+      let qdcount = list.length(questions)
+      let nscount = list.length(authority)
+      let arcount =
+        list.length(additional)
+        + case edns {
+          option.Some(_) -> 1
+          option.None -> 0
+        }
+
+      let questions =
+        list.fold(over: questions, from: <<>>, with: fn(acc, question) {
+          <<acc:bits, encode_question(question):bits>>
+        })
+
+      let authority =
+        list.fold(over: authority, from: <<>>, with: fn(acc, record) {
+          <<acc:bits, encode_record(record):bits>>
+        })
+
+      let additional =
+        list.fold(over: additional, from: <<>>, with: fn(acc, record) {
+          <<acc:bits, encode_record(record):bits>>
+        })
+
+      let edns = option.map(edns, encode_edns) |> option.unwrap(<<>>)
+
+      <<
+        id:16,
+        0:1,
+        encode_opcode(opcode):4,
+        0:1,
+        bool_to_int(truncated):1,
+        bool_to_int(recursion_desired):1,
+        0:1,
+        0:3,
+        0:4,
+        qdcount:16,
+        0:16,
+        nscount:16,
+        arcount:16,
+        questions:bits,
+        authority:bits,
+        additional:bits,
+        edns:bits,
+      >>
+    }
+    Response(
+      id:,
+      opcode:,
+      authoritative:,
+      truncated:,
+      recursion_desired:,
+      recursion_available:,
+      rcode:,
+      answers:,
+      authority:,
+      additional:,
+      edns:,
+    ) -> {
+      let ancount = list.length(answers)
+      let nscount = list.length(authority)
+      let arcount =
+        list.length(additional)
+        + case edns {
+          option.Some(_) -> 1
+          option.None -> 0
+        }
+
+      let answers =
+        list.fold(over: answers, from: <<>>, with: fn(acc, record) {
+          <<acc:bits, encode_record(record):bits>>
+        })
+
+      let authority =
+        list.fold(over: authority, from: <<>>, with: fn(acc, record) {
+          <<acc:bits, encode_record(record):bits>>
+        })
+
+      let additional =
+        list.fold(over: additional, from: <<>>, with: fn(acc, record) {
+          <<acc:bits, encode_record(record):bits>>
+        })
+
+      let edns = option.map(edns, encode_edns) |> option.unwrap(<<>>)
+
+      <<
+        id:16,
+        1:1,
+        encode_opcode(opcode):4,
+        bool_to_int(authoritative):1,
+        bool_to_int(truncated):1,
+        bool_to_int(recursion_desired):1,
+        bool_to_int(recursion_available):1,
+        0:3,
+        encode_rcode(rcode):4,
+        0:16,
+        ancount:16,
+        nscount:16,
+        arcount:16,
+        answers:bits,
+        authority:bits,
+        additional:bits,
+        edns:bits,
+      >>
+    }
+  }
+}
+
+fn bool_to_int(value: Bool) -> Int {
+  case value {
+    True -> 1
+    False -> 0
+  }
+}
+
+fn encode_opcode(opcode: Opcode) -> Int {
+  case opcode {
+    QUERY -> 0
+    IQUERY -> 1
+    STATUS -> 2
+    NOTIFY -> 4
+    UPDATE -> 5
+  }
+}
+
+fn encode_rcode(rcode: Rcode) -> Int {
+  case rcode {
+    NoError -> 0
+    FormErr -> 1
+    ServFail -> 2
+    NXDomain -> 3
+    NotImp -> 4
+    Refused -> 5
+  }
+}
+
+fn encode_type(type_: Type) -> Int {
+  case type_ {
+    A -> 1
+    NS -> 2
+    CNAME -> 5
+    SOA -> 6
+    PTR -> 12
+    MX -> 15
+    AAAA -> 28
+    SRV -> 33
+    ANYType -> 255
+  }
+}
+
+fn encode_class(class: Class) -> Int {
+  case class {
+    IN -> 1
+    CH -> 3
+    ANYClass -> 255
+  }
+}
+
+fn encode_name(name: String) -> BitArray {
+  case name {
+    "" -> <<0>>
+    _ ->
+      string.split(name, ".")
+      |> list.fold(from: <<>>, with: fn(acc, label) {
+        <<acc:bits, string.byte_size(label):8, label:utf8>>
+      })
+      |> bit_array.append(<<0>>)
+  }
+}
+
+fn encode_question(question: Question) -> BitArray {
+  <<
+    encode_name(question.qname):bits,
+    encode_type(question.qtype):16,
+    encode_class(question.qclass):16,
+  >>
+}
+
+fn encode_record(record: ResourceRecord) -> BitArray {
+  <<
+    encode_name(record.name):bits,
+    encode_type(record.rtype):16,
+    encode_class(record.rclass):16,
+    record.ttl:32,
+    bit_array.byte_size(record.rdata):16,
+    record.rdata:bits,
+  >>
+}
+
+fn encode_edns(edns: Edns) -> BitArray {
+  let options =
+    list.fold(over: edns.options, from: <<>>, with: fn(acc, option) {
+      <<
+        acc:bits,
+        option.code:16,
+        bit_array.byte_size(option.data):16,
+        option.data:bits,
+      >>
+    })
+
+  <<
+    0:8,
+    41:16,
+    edns.udp_payload_size:16,
+    edns.extended_rcode:8,
+    edns.version:8,
+    bool_to_int(edns.dnssec_ok):1,
+    0:15,
+    bit_array.byte_size(options):16,
+    options:bits,
+  >>
+}
