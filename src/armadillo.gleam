@@ -1,4 +1,6 @@
+import armadillo/cache
 import armadillo/listener
+import armadillo/resolver
 import gleam/erlang/application
 import gleam/erlang/process
 import gleam/otp/actor
@@ -16,8 +18,13 @@ pub fn start(
   _type: application.StartType,
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
+  let _cache = cache.new(process.new_name("dns_cache"))
+  let listener = process.new_name("listener")
+  let resolver_factory = process.new_name("resolver_factory")
+
   supervisor.new(supervisor.OneForAll)
-  |> supervisor.add(listener.supervised())
+  |> supervisor.add(resolver.factory(resolver_factory))
+  |> supervisor.add(listener.supervised(listener, resolver_factory))
   |> supervisor.start()
   |> result.map(fn(started) { started.pid })
 }

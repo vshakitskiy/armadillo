@@ -24,10 +24,10 @@ pub type Message {
   Response(
     id: Int,
     opcode: Opcode,
-    authoritative: Bool,
     truncated: Bool,
     recursion_desired: Bool,
     recursion_available: Bool,
+    authoritative: Bool,
     rcode: Rcode,
     answers: List(ResourceRecord),
     authority: List(ResourceRecord),
@@ -176,10 +176,10 @@ pub fn decode(data: BitArray) {
           Ok(Response(
             id:,
             opcode:,
-            authoritative: aa == 1,
             truncated: tc == 1,
             recursion_desired: rd == 1,
             recursion_available: ra == 1,
+            authoritative: aa == 1,
             rcode:,
             answers:,
             authority:,

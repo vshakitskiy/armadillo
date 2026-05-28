@@ -1,4 +1,4 @@
--module(armadillo_ffi).
+-module(udp_ffi).
 
 -export([open_udp/2, coerce_socket_message/1, set_active/1, parse_address/1, send_udp/4]).
 

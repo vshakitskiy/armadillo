@@ -87,6 +87,7 @@ pub type Builder(state, message) {
     initialise: fn(process.Subject(message)) ->
       Result(Initialised(state, message), String),
     handler: fn(state, Message(message)) -> Next(state, message),
+    name: option.Option(process.Name(Message(message))),
     port: Int,
     ipv6: Bool,
     reuseaddr: Bool,
@@ -103,6 +104,7 @@ pub fn new(
   Builder(
     initialise: fn(_self) { Ok(initialised(state)) },
     handler:,
+    name: option.None,
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -120,6 +122,7 @@ pub fn new_with_initialiser(
   Builder(
     initialise:,
     handler:,
+    name: option.None,
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -150,7 +153,7 @@ pub fn bind(
   Builder(..builder, interface: address)
 }
 
-@external(erlang, "armadillo_ffi", "parse_address")
+@external(erlang, "udp_ffi", "parse_address")
 fn parse_address(value: charlist.Charlist) -> Result(ip_address, Nil)
 
 pub fn with_ipv6(builder: Builder(state, message)) -> Builder(state, message) {
@@ -177,6 +180,13 @@ pub fn send_buffer(
   Builder(..builder, sndbuf: size)
 }
 
+pub fn named(
+  builder: Builder(state, message),
+  name: process.Name(Message(message)),
+) -> Builder(state, message) {
+  Builder(..builder, name: option.Some(name))
+}
+
 type State(state, message) {
   State(
     socket: Socket,
@@ -193,87 +203,94 @@ pub type Message(message) {
 pub fn start(
   builder: Builder(state, message),
 ) -> actor.StartResult(process.Subject(message)) {
-  actor.new_with_initialiser(1000, fn(_self) {
-    let user = process.new_subject()
+  let actor =
+    actor.new_with_initialiser(1000, fn(_self) {
+      let user = process.new_subject()
 
-    let options = udp_settings(builder)
+      let options = udp_settings(builder)
 
-    case open_udp(builder.port, options) {
-      Ok(socket) -> {
-        use Initialised(state, user_selector) <- result.try(builder.initialise(
-          user,
-        ))
+      case open_udp(builder.port, options) {
+        Ok(socket) -> {
+          use Initialised(state, user_selector) <- result.try(
+            builder.initialise(user),
+          )
 
-        let selector =
-          process.new_selector()
-          |> process.select(user)
-          |> process.map_selector(User)
-          |> process.merge_selector(udp_selector())
+          let selector =
+            process.new_selector()
+            |> process.select(user)
+            |> process.map_selector(User)
+            |> process.merge_selector(udp_selector())
 
-        actor.initialised(State(socket:, user: state, selector:))
-        |> actor.selecting(case user_selector {
-          option.Some(user) ->
-            process.map_selector(user, User)
-            |> process.merge_selector(selector)
-          option.None -> selector
-        })
-        |> actor.returning(user)
-        |> Ok
-      }
-      Error(reason) ->
-        Error("Failed to open udp socket. " <> describe_error(reason))
-    }
-  })
-  |> actor.on_message(fn(state, message) {
-    let next = exception.rescue(fn() { builder.handler(state.user, message) })
-
-    case next, message {
-      Ok(Continue(user, selector)), User(..) -> {
-        let next = actor.continue(State(..state, user:))
-        case selector {
-          option.Some(selector) -> {
-            process.map_selector(selector, User)
-            |> process.merge_selector(state.selector)
-            |> actor.with_selector(next, _)
-          }
-          option.None -> next
+          actor.initialised(State(socket:, user: state, selector:))
+          |> actor.selecting(case user_selector {
+            option.Some(user) ->
+              process.map_selector(user, User)
+              |> process.merge_selector(selector)
+            option.None -> selector
+          })
+          |> actor.returning(user)
+          |> Ok
         }
+        Error(reason) ->
+          Error("Failed to open udp socket. " <> describe_error(reason))
       }
-      Ok(Continue(user, selector)), Packet(..) -> {
-        case set_active(state.socket) {
-          Ok(Nil) -> {
-            let next = actor.continue(State(..state, user:))
-            case selector {
-              option.Some(selector) -> {
-                process.map_selector(selector, User)
-                |> process.merge_selector(state.selector)
-                |> actor.with_selector(next, _)
-              }
-              option.None -> next
+    })
+    |> actor.on_message(fn(state, message) {
+      let next = exception.rescue(fn() { builder.handler(state.user, message) })
+
+      case next, message {
+        Ok(Continue(user, selector)), User(..) -> {
+          let next = actor.continue(State(..state, user:))
+          case selector {
+            option.Some(selector) -> {
+              process.map_selector(selector, User)
+              |> process.merge_selector(state.selector)
+              |> actor.with_selector(next, _)
             }
+            option.None -> next
           }
-          Error(reason) ->
-            actor.stop_abnormal(
-              "Failed to set udp socket as active. " <> describe_error(reason),
-            )
+        }
+        Ok(Continue(user, selector)), Packet(..) -> {
+          case set_active(state.socket) {
+            Ok(Nil) -> {
+              let next = actor.continue(State(..state, user:))
+              case selector {
+                option.Some(selector) -> {
+                  process.map_selector(selector, User)
+                  |> process.merge_selector(state.selector)
+                  |> actor.with_selector(next, _)
+                }
+                option.None -> next
+              }
+            }
+            Error(reason) ->
+              actor.stop_abnormal(
+                "Failed to set udp socket as active. " <> describe_error(reason),
+              )
+          }
+        }
+        Ok(NormalStop), _ -> actor.stop()
+        Ok(AbnormalStop(reason)), _ -> actor.stop_abnormal(reason)
+        Error(reason), _ -> {
+          let reason = case reason {
+            exception.Errored(_dynamic) ->
+              "An error was raised in the handler. This can be caused by calling the erlang:error/1 function, or some other runtime error."
+            exception.Thrown(_dynamic) ->
+              "A value was thrown in the handler. This can be caused by calling the erlang:throw/1 function."
+            exception.Exited(_dynamic) ->
+              "A process exited in the handler. This can be caused by calling the erlang:exit/1 function."
+          }
+          actor.stop_abnormal(reason)
         }
       }
-      Ok(NormalStop), _ -> actor.stop()
-      Ok(AbnormalStop(reason)), _ -> actor.stop_abnormal(reason)
-      Error(reason), _ -> {
-        let reason = case reason {
-          exception.Errored(_dynamic) ->
-            "An error was raised in the handler. This can be caused by calling the erlang:error/1 function, or some other runtime error."
-          exception.Thrown(_dynamic) ->
-            "A value was thrown in the handler. This can be caused by calling the erlang:throw/1 function."
-          exception.Exited(_dynamic) ->
-            "A process exited in the handler. This can be caused by calling the erlang:exit/1 function."
-        }
-        actor.stop_abnormal(reason)
-      }
-    }
-  })
-  |> actor.start()
+    })
+
+  let actor = case builder.name {
+    option.Some(name) -> actor.named(actor, name)
+    option.None -> actor
+  }
+
+  actor.start(actor)
 }
 
 pub fn supervised(
@@ -318,7 +335,7 @@ pub fn send(peer: Peer, data: BitArray) -> Result(Nil, SocketError) {
   send_udp(peer.socket, peer.ip, peer.port, data)
 }
 
-@external(erlang, "armadillo_ffi", "send_udp")
+@external(erlang, "udp_ffi", "send_udp")
 fn send_udp(
   socket: Socket,
   ip: IpAddress,
@@ -326,13 +343,13 @@ fn send_udp(
   data: BitArray,
 ) -> Result(Nil, SocketError)
 
-@external(erlang, "armadillo_ffi", "open_udp")
+@external(erlang, "udp_ffi", "open_udp")
 fn open_udp(port: Int, options: List(Option)) -> Result(Socket, SocketError)
 
-@external(erlang, "armadillo_ffi", "set_active")
+@external(erlang, "udp_ffi", "set_active")
 fn set_active(socket: Socket) -> Result(Nil, SocketError)
 
-@external(erlang, "armadillo_ffi", "coerce_socket_message")
+@external(erlang, "udp_ffi", "coerce_socket_message")
 fn coerce_socket_message(record: dynamic.Dynamic) -> Message(message)
 
 pub type SocketError {
