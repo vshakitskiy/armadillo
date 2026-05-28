@@ -1,3 +1,4 @@
+import armadillo/ip
 import exception
 import gleam/dynamic
 import gleam/erlang/atom
@@ -10,16 +11,11 @@ import gleam/result
 
 pub type Socket
 
-pub type IpAddress {
-  IpV4(Int, Int, Int, Int)
-  IpV6(Int, Int, Int, Int, Int, Int, Int, Int)
-}
-
 pub type Peer {
-  Peer(socket: Socket, ip: IpAddress, port: Int)
+  Peer(socket: Socket, ip: ip.Address, port: Int)
 }
 
-type Option {
+pub type Option {
   ActiveMode(ActiveMode)
   Ip(IpMode)
   Ipv6
@@ -37,7 +33,7 @@ pub type ActiveMode {
 }
 
 pub type IpMode {
-  Address(IpAddress)
+  Address(ip.Address)
   Loopback
   Any
 }
@@ -209,7 +205,7 @@ pub fn start(
 
       let options = udp_settings(builder)
 
-      case open_udp(builder.port, options) {
+      case open(builder.port, options) {
         Ok(socket) -> {
           use Initialised(state, user_selector) <- result.try(
             builder.initialise(user),
@@ -301,10 +297,10 @@ pub fn supervised(
 
 fn udp_settings(builder: Builder(state, message)) -> List(Option) {
   let interface = case builder.interface, builder.ipv6 {
-    Loopback, False -> Address(IpV4(127, 0, 0, 1))
-    Loopback, True -> Address(IpV6(0, 0, 0, 0, 0, 0, 0, 1))
-    Any, False -> Address(IpV4(0, 0, 0, 0))
-    Any, True -> Address(IpV6(0, 0, 0, 0, 0, 0, 0, 0))
+    Loopback, False -> Address(ip.IpV4(127, 0, 0, 1))
+    Loopback, True -> Address(ip.IpV6(0, 0, 0, 0, 0, 0, 0, 1))
+    Any, False -> Address(ip.IpV4(0, 0, 0, 0))
+    Any, True -> Address(ip.IpV6(0, 0, 0, 0, 0, 0, 0, 0))
     other, _ -> other
   }
 
@@ -338,16 +334,25 @@ pub fn send(peer: Peer, data: BitArray) -> Result(Nil, SocketError) {
 @external(erlang, "udp_ffi", "send_udp")
 fn send_udp(
   socket: Socket,
-  ip: IpAddress,
+  ip: ip.Address,
   port: Int,
   data: BitArray,
 ) -> Result(Nil, SocketError)
 
 @external(erlang, "udp_ffi", "open_udp")
-fn open_udp(port: Int, options: List(Option)) -> Result(Socket, SocketError)
+pub fn open(port: Int, options: List(Option)) -> Result(Socket, SocketError)
+
+@external(erlang, "udp_ffi", "recv_udp")
+pub fn recv(
+  socket: Socket,
+  timeout: Int,
+) -> Result(#(Peer, BitArray), SocketError)
+
+@external(erlang, "udp_ffi", "close_udp")
+pub fn close(socket: Socket) -> Nil
 
 @external(erlang, "udp_ffi", "set_active")
-fn set_active(socket: Socket) -> Result(Nil, SocketError)
+pub fn set_active(socket: Socket) -> Result(Nil, SocketError)
 
 @external(erlang, "udp_ffi", "coerce_socket_message")
 fn coerce_socket_message(record: dynamic.Dynamic) -> Message(message)

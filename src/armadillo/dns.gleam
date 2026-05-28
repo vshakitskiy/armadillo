@@ -10,7 +10,12 @@ pub type DecodeError {
   Malformed
 }
 
-pub type Message {
+pub type Decoded {
+  DecodedQuery(Query)
+  DecodedResponse(Response)
+}
+
+pub type Query {
   Query(
     id: Int,
     opcode: Opcode,
@@ -21,6 +26,9 @@ pub type Message {
     additional: List(ResourceRecord),
     edns: option.Option(Edns),
   )
+}
+
+pub type Response {
   Response(
     id: Int,
     opcode: Opcode,
@@ -29,6 +37,7 @@ pub type Message {
     recursion_available: Bool,
     authoritative: Bool,
     rcode: Rcode,
+    questions: List(Question),
     answers: List(ResourceRecord),
     authority: List(ResourceRecord),
     additional: List(ResourceRecord),
@@ -162,30 +171,35 @@ pub fn decode(data: BitArray) {
 
       case qr {
         0 ->
-          Ok(Query(
-            id:,
-            opcode:,
-            truncated: tc == 1,
-            recursion_desired: rd == 1,
-            questions:,
-            authority:,
-            additional:,
-            edns:,
-          ))
+          Ok(
+            DecodedQuery(Query(
+              id:,
+              opcode:,
+              truncated: tc == 1,
+              recursion_desired: rd == 1,
+              questions:,
+              authority:,
+              additional:,
+              edns:,
+            )),
+          )
         1 ->
-          Ok(Response(
-            id:,
-            opcode:,
-            truncated: tc == 1,
-            recursion_desired: rd == 1,
-            recursion_available: ra == 1,
-            authoritative: aa == 1,
-            rcode:,
-            answers:,
-            authority:,
-            additional:,
-            edns:,
-          ))
+          Ok(
+            DecodedResponse(Response(
+              id:,
+              opcode:,
+              truncated: tc == 1,
+              recursion_desired: rd == 1,
+              recursion_available: ra == 1,
+              authoritative: aa == 1,
+              rcode:,
+              questions:,
+              answers:,
+              authority:,
+              additional:,
+              edns:,
+            )),
+          )
         _ -> panic as "unreachable pattern!"
       }
     }
@@ -401,124 +415,107 @@ fn do_decode_name(
   }
 }
 
-pub fn encode(message: Message) -> BitArray {
-  case message {
-    Query(
-      id:,
-      opcode:,
-      truncated:,
-      recursion_desired:,
-      questions:,
-      authority:,
-      additional:,
-      edns:,
-    ) -> {
-      let qdcount = list.length(questions)
-      let nscount = list.length(authority)
-      let arcount =
-        list.length(additional)
-        + case edns {
-          option.Some(_) -> 1
-          option.None -> 0
-        }
-
-      let questions =
-        list.fold(over: questions, from: <<>>, with: fn(acc, question) {
-          <<acc:bits, encode_question(question):bits>>
-        })
-
-      let authority =
-        list.fold(over: authority, from: <<>>, with: fn(acc, record) {
-          <<acc:bits, encode_record(record):bits>>
-        })
-
-      let additional =
-        list.fold(over: additional, from: <<>>, with: fn(acc, record) {
-          <<acc:bits, encode_record(record):bits>>
-        })
-
-      let edns = option.map(edns, encode_edns) |> option.unwrap(<<>>)
-
-      <<
-        id:16,
-        0:1,
-        encode_opcode(opcode):4,
-        0:1,
-        bool_to_int(truncated):1,
-        bool_to_int(recursion_desired):1,
-        0:1,
-        0:3,
-        0:4,
-        qdcount:16,
-        0:16,
-        nscount:16,
-        arcount:16,
-        questions:bits,
-        authority:bits,
-        additional:bits,
-        edns:bits,
-      >>
+pub fn encode_query(query: Query) {
+  let qdcount = list.length(query.questions)
+  let nscount = list.length(query.authority)
+  let arcount =
+    list.length(query.additional)
+    + case query.edns {
+      option.Some(_) -> 1
+      option.None -> 0
     }
-    Response(
-      id:,
-      opcode:,
-      authoritative:,
-      truncated:,
-      recursion_desired:,
-      recursion_available:,
-      rcode:,
-      answers:,
-      authority:,
-      additional:,
-      edns:,
-    ) -> {
-      let ancount = list.length(answers)
-      let nscount = list.length(authority)
-      let arcount =
-        list.length(additional)
-        + case edns {
-          option.Some(_) -> 1
-          option.None -> 0
-        }
 
-      let answers =
-        list.fold(over: answers, from: <<>>, with: fn(acc, record) {
-          <<acc:bits, encode_record(record):bits>>
-        })
+  let questions =
+    list.fold(over: query.questions, from: <<>>, with: fn(acc, question) {
+      <<acc:bits, encode_question(question):bits>>
+    })
 
-      let authority =
-        list.fold(over: authority, from: <<>>, with: fn(acc, record) {
-          <<acc:bits, encode_record(record):bits>>
-        })
+  let authority =
+    list.fold(over: query.authority, from: <<>>, with: fn(acc, record) {
+      <<acc:bits, encode_record(record):bits>>
+    })
 
-      let additional =
-        list.fold(over: additional, from: <<>>, with: fn(acc, record) {
-          <<acc:bits, encode_record(record):bits>>
-        })
+  let additional =
+    list.fold(over: query.additional, from: <<>>, with: fn(acc, record) {
+      <<acc:bits, encode_record(record):bits>>
+    })
 
-      let edns = option.map(edns, encode_edns) |> option.unwrap(<<>>)
+  let edns = option.map(query.edns, encode_edns) |> option.unwrap(<<>>)
 
-      <<
-        id:16,
-        1:1,
-        encode_opcode(opcode):4,
-        bool_to_int(authoritative):1,
-        bool_to_int(truncated):1,
-        bool_to_int(recursion_desired):1,
-        bool_to_int(recursion_available):1,
-        0:3,
-        encode_rcode(rcode):4,
-        0:16,
-        ancount:16,
-        nscount:16,
-        arcount:16,
-        answers:bits,
-        authority:bits,
-        additional:bits,
-        edns:bits,
-      >>
+  <<
+    query.id:16,
+    0:1,
+    encode_opcode(query.opcode):4,
+    0:1,
+    bool_to_int(query.truncated):1,
+    bool_to_int(query.recursion_desired):1,
+    0:1,
+    0:3,
+    0:4,
+    qdcount:16,
+    0:16,
+    nscount:16,
+    arcount:16,
+    questions:bits,
+    authority:bits,
+    additional:bits,
+    edns:bits,
+  >>
+}
+
+pub fn encode_response(response: Response) {
+  let qdcount = list.length(response.questions)
+  let ancount = list.length(response.answers)
+  let nscount = list.length(response.authority)
+  let arcount =
+    list.length(response.additional)
+    + case response.edns {
+      option.Some(_) -> 1
+      option.None -> 0
     }
-  }
+
+  let questions =
+    list.fold(over: response.questions, from: <<>>, with: fn(acc, question) {
+      <<acc:bits, encode_question(question):bits>>
+    })
+
+  let answers =
+    list.fold(over: response.answers, from: <<>>, with: fn(acc, record) {
+      <<acc:bits, encode_record(record):bits>>
+    })
+
+  let authority =
+    list.fold(over: response.authority, from: <<>>, with: fn(acc, record) {
+      <<acc:bits, encode_record(record):bits>>
+    })
+
+  let additional =
+    list.fold(over: response.additional, from: <<>>, with: fn(acc, record) {
+      <<acc:bits, encode_record(record):bits>>
+    })
+
+  let edns = option.map(response.edns, encode_edns) |> option.unwrap(<<>>)
+
+  <<
+    response.id:16,
+    1:1,
+    encode_opcode(response.opcode):4,
+    bool_to_int(response.authoritative):1,
+    bool_to_int(response.truncated):1,
+    bool_to_int(response.recursion_desired):1,
+    bool_to_int(response.recursion_available):1,
+    0:3,
+    encode_rcode(response.rcode):4,
+    qdcount:16,
+    ancount:16,
+    nscount:16,
+    arcount:16,
+    questions:bits,
+    answers:bits,
+    authority:bits,
+    additional:bits,
+    edns:bits,
+  >>
 }
 
 fn bool_to_int(value: Bool) -> Int {

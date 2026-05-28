@@ -1,29 +1,30 @@
 -module(cache_ffi).
 
--export([new/1, insert/5, lookup/3, delete/3]).
+-export([new/0, insert/4, lookup/2, delete/2]).
 
-new(TableName) ->
-    ets:new(TableName,
-            [set, public, named_table, {read_concurrency, true}, {write_concurrency, auto}]).
-
-insert(Table, QName, QType, Ip, ExpiryTime) ->
-    ets:insert(Table, {{QName, QType}, Ip, ExpiryTime}),
+new() ->
+    ets:new(dns,
+            [set, public, named_table, {read_concurrency, true}, {write_concurrency, auto}]),
     nil.
 
-lookup(Table, QName, QType) ->
-    case ets:lookup(Table, {QName, QType}) of
-        [{{QName, QType}, Ip, ExpiryTime}] ->
-            CurrentTime = os:system_time(second),
-            if CurrentTime < ExpiryTime ->
-                   {ok, Ip};
-               true ->
-                   ets:delete(Table, {QName, QType}),
-                   {error, expired}
+insert(QName, QType, Ip, Expiry) ->
+    ets:insert(dns, {{QName, QType}, Ip, Expiry}),
+    nil.
+
+lookup(QName, QType) ->
+    case ets:lookup(dns, {QName, QType}) of
+        [{_, Ip, Expiry}] ->
+            Remaining = Expiry - erlang:system_time(second),
+            case Remaining > 0 of
+                true ->
+                    {ok, {record, Ip, Remaining}};
+                false ->
+                    {error, expired}
             end;
         [] ->
             {error, not_found}
     end.
 
-delete(Table, QName, QType) ->
-    ets:delete(Table, {QName, QType}),
-    ok.
+delete(QName, QType) ->
+    ets:delete(dns, {QName, QType}),
+    nil.

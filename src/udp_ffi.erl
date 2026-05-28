@@ -1,9 +1,23 @@
 -module(udp_ffi).
 
--export([open_udp/2, coerce_socket_message/1, set_active/1, parse_address/1, send_udp/4]).
+-export([open_udp/2, recv_udp/2, close_udp/1, coerce_socket_message/1, set_active/1,
+         parse_address/1, send_udp/4]).
 
 open_udp(Port, Options) ->
     gen_udp:open(Port, [binary | to_erl_options(Options)]).
+
+recv_udp(Socket, Timeout) ->
+    case gen_udp:recv(Socket, 0, Timeout) of
+        {ok, {{A, B, C, D}, Port, Data}} ->
+            {ok, {{peer, Socket, {ip_v4, A, B, C, D}, Port}, Data}};
+        {ok, {{A, B, C, D, E, F, G, H}, Port, Data}} ->
+            {ok, {{peer, Socket, {ip_v6, A, B, C, D, E, F, G, H}, Port}, Data}};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+close_udp(Socket) ->
+    gen_udp:close(Socket).
 
 coerce_socket_message({udp, Socket, {A, B, C, D}, Port, Data}) ->
     {packet, {peer, Socket, {ip_v4, A, B, C, D}, Port}, Data};

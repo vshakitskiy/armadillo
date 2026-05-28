@@ -18,7 +18,8 @@ pub fn start(
   _type: application.StartType,
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
-  let _cache = cache.new(process.new_name("dns_cache"))
+  cache.new()
+
   let listener = process.new_name("listener")
   let resolver_factory = process.new_name("resolver_factory")
 
