@@ -1,7 +1,7 @@
 import armadillo/cache
-import armadillo/dns
+import armadillo/dns/protocol as dns
+import armadillo/dns/udp
 import armadillo/ip
-import armadillo/udp
 import gleam/erlang/process
 import gleam/int
 import gleam/list

@@ -1,9 +1,10 @@
 import armadillo/cache
-import armadillo/listener
-import armadillo/resolver
+import armadillo/dns
+import armadillo/ip
 import armadillo/sql
 import gleam/erlang/application
 import gleam/erlang/process
+import gleam/list
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/result
@@ -20,19 +21,20 @@ pub fn start(
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
   let conn = sql.open()
-  cache.init(conn)
+  let assert Ok(rows) = sql.get_records(conn)
+  let records =
+    list.filter_map(rows, fn(r) {
+      case ip.from_string(r.ip) {
+        Ok(addr) -> Ok(#(r.domain, addr))
+        Error(_) -> Error(Nil)
+      }
+    })
+  cache.init(records)
 
-  let listener = process.new_name("listener")
-  let resolver_factory = process.new_name("resolver_factory")
-
-  let dns =
-    supervisor.new(supervisor.OneForAll)
-    |> supervisor.add(resolver.factory(resolver_factory))
-    |> supervisor.add(listener.supervised(listener, resolver_factory))
-    |> supervisor.supervised()
+  let resolver_name = process.new_name("resolver_factory")
 
   supervisor.new(supervisor.OneForOne)
-  |> supervisor.add(dns)
+  |> supervisor.add(dns.supervised(resolver_name))
   |> supervisor.add(cache.worker())
   |> supervisor.start()
   |> result.map(fn(started) { started.pid })

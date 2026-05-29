@@ -1,11 +1,9 @@
-import armadillo/dns
+import armadillo/dns/protocol as dns
 import armadillo/ip
-import armadillo/sql
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
-import sqlight
 
 pub type CacheError {
   NotFound
@@ -20,12 +18,10 @@ pub type Entry {
   Entry(ip: ip.Address, remaining: Int)
 }
 
-pub fn init(conn: sqlight.Connection) {
+pub fn init(records: List(#(String, ip.Address))) {
   new()
-  let assert Ok(records) = sql.get_records(conn)
   list.each(records, fn(r) {
-    let assert Ok(addr) = ip.from_string(r.ip)
-    do_set(r.domain, dns.A, addr, -1)
+    do_set(r.0, dns.A, r.1, -1)
   })
 }
 
