@@ -250,7 +250,11 @@ fn do_decode_records(
     0 -> Ok(#(list.reverse(acc), remaining))
     _ -> {
       use #(name, remaining) <- result.try(decode_name(remaining, packet))
-      use #(record, remaining) <- result.try(decode_record(name, remaining))
+      use #(record, remaining) <- result.try(decode_record(
+        name,
+        remaining,
+        packet,
+      ))
       do_decode_records(remaining, packet, count - 1, [record, ..acc])
     }
   }
@@ -306,7 +310,11 @@ fn do_decode_additional(
           )
         }
         _ -> {
-          use #(record, remaining) <- result.try(decode_record(name, remaining))
+          use #(record, remaining) <- result.try(decode_record(
+            name,
+            remaining,
+            packet,
+          ))
           do_decode_additional(remaining, packet, count - 1, edns, [
             record,
             ..acc
@@ -329,7 +337,7 @@ fn parse_edns_options(
   }
 }
 
-fn decode_record(name: String, remaining: BitArray) {
+fn decode_record(name: String, remaining: BitArray, packet: BitArray) {
   case remaining {
     <<
       rtype:16,
@@ -341,6 +349,14 @@ fn decode_record(name: String, remaining: BitArray) {
     >> -> {
       use rtype <- result.try(decode_type(rtype))
       use rclass <- result.try(decode_class(rclass))
+      let rdata = case rtype {
+        CNAME ->
+          case decode_name(rdata, packet) {
+            Ok(#(target, _)) -> encode_name(target)
+            Error(_) -> rdata
+          }
+        _ -> rdata
+      }
       Ok(#(ResourceRecord(name:, rtype:, rclass:, ttl:, rdata:), remaining))
     }
 
@@ -568,7 +584,27 @@ fn encode_class(class: Class) -> Int {
   }
 }
 
-fn encode_name(name: String) -> BitArray {
+pub fn decode_cname_target(rdata: BitArray) -> Result(String, DecodeError) {
+  do_decode_cname_labels(rdata, [])
+}
+
+fn do_decode_cname_labels(
+  data: BitArray,
+  acc: List(String),
+) -> Result(String, DecodeError) {
+  case data {
+    <<0:8, _:bits>> -> Ok(string.join(list.reverse(acc), "."))
+    <<length:8, _:bits>> if length >= 0xC0 -> Error(Malformed)
+    <<length:8, label:bytes-size(length), remaining:bits>> ->
+      case bit_array.to_string(label) {
+        Ok(s) -> do_decode_cname_labels(remaining, [s, ..acc])
+        Error(_) -> Error(Malformed)
+      }
+    _ -> Error(NotEnough)
+  }
+}
+
+pub fn encode_name(name: String) -> BitArray {
   case name {
     "" -> <<0>>
     _ ->

@@ -2,7 +2,6 @@ import armadillo/cache
 import armadillo/dns
 import armadillo/ip
 import armadillo/udp
-import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -37,22 +36,17 @@ fn handle_query(resolve: Resolve) -> Nil {
       with: fn(acc, question, index) {
         let #(questions, answers) = acc
 
-        case cache.get(question.qname, question.qtype) {
-          Ok(cache.Record(ips:)) -> {
-            let records =
-              list.map(ips, with: fn(ip) {
-                let #(ip, ttl) = ip
-                #(index, resource_record(question.qname, ip, ttl))
-              })
-
-            #(questions, list.append(records, answers))
+        case lookup_chain(question.qname, question.qtype) {
+          Ok([]) | Error(Nil) -> #([#(index, question), ..questions], answers)
+          Ok(records) -> {
+            let keyed = list.map(records, pair.new(index, _))
+            #(questions, list.append(keyed, answers))
           }
-          Error(_) -> #([#(index, question), ..questions], answers)
         }
       },
     )
 
-  case list.map(keyed_questions, with: fn(entry) { entry.1 }) {
+  case list.map(keyed_questions, with: pair.second) {
     [] -> {
       let answers =
         list.sort(keyed_answers, fn(a, b) {
@@ -67,12 +61,6 @@ fn handle_query(resolve: Resolve) -> Nil {
       Nil
     }
     questions -> {
-      let index_map =
-        list.fold(keyed_questions, dict.new(), fn(acc, entry) {
-          let #(index, question) = entry
-          dict.insert(acc, #(question.qname, question.qtype), index)
-        })
-
       let upstream_query =
         dns.encode_query(dns.Query(
           id: query.id,
@@ -96,22 +84,24 @@ fn handle_query(resolve: Resolve) -> Nil {
           case dns.decode(data) {
             Ok(dns.DecodedResponse(response)) -> {
               list.each(response.answers, fn(record) {
-                case ip.from_bit_array(record.rdata) {
-                  Ok(ip) -> cache.set(record.name, record.rtype, ip, record.ttl)
-                  Error(_) -> Nil
+                case record.rtype {
+                  dns.CNAME ->
+                    case dns.decode_cname_target(record.rdata) {
+                      Ok(target) ->
+                        cache.set_cname(record.name, target, record.ttl)
+                      Error(_) -> Nil
+                    }
+                  _ ->
+                    case ip.from_bit_array(record.rdata) {
+                      Ok(ip) ->
+                        cache.set(record.name, record.rtype, ip, record.ttl)
+                      Error(_) -> Nil
+                    }
                 }
               })
 
-              let upstream_answers =
-                list.filter_map(response.answers, fn(record) {
-                  case dict.get(index_map, #(record.name, record.rtype)) {
-                    Ok(index) -> Ok(#(index, record))
-                    Error(_) -> Error(Nil)
-                  }
-                })
-
-              let answers =
-                list.append(keyed_answers, upstream_answers)
+              let cached =
+                keyed_answers
                 |> list.sort(fn(a, b) {
                   int.compare(pair.first(a), pair.first(b))
                 })
@@ -122,7 +112,7 @@ fn handle_query(resolve: Resolve) -> Nil {
                   ..response,
                   id: query.id,
                   questions: query.questions,
-                  answers:,
+                  answers: list.append(cached, response.answers),
                 )
                 |> dns.encode_response
                 |> udp.send(peer, _)
@@ -152,7 +142,41 @@ fn handle_query(resolve: Resolve) -> Nil {
   }
 }
 
-pub fn encode_serv_fail(query: dns.Query) -> BitArray {
+fn lookup_chain(
+  qname: String,
+  qtype: dns.Type,
+) -> Result(List(dns.ResourceRecord), Nil) {
+  case cache.get(qname, qtype) {
+    Ok(cache.Record(ips:)) ->
+      Ok(
+        list.map(ips, fn(entry) {
+          resource_record(qname, entry.ip, entry.remaining)
+        }),
+      )
+    Error(_) ->
+      case cache.get_cname(qname) {
+        Ok(cnames) ->
+          list.try_fold(over: cnames, from: [], with: fn(acc, entry) {
+            let #(target, remaining) = entry
+            let cname_record =
+              dns.ResourceRecord(
+                name: qname,
+                rtype: dns.CNAME,
+                rclass: dns.IN,
+                ttl: remaining,
+                rdata: dns.encode_name(target),
+              )
+            case lookup_chain(target, qtype) {
+              Ok(tail) -> Ok(list.append(acc, [cname_record, ..tail]))
+              Error(_) -> Error(Nil)
+            }
+          })
+        Error(_) -> Error(Nil)
+      }
+  }
+}
+
+fn encode_serv_fail(query: dns.Query) -> BitArray {
   dns.encode_response(dns.Response(
     id: query.id,
     opcode: query.opcode,
