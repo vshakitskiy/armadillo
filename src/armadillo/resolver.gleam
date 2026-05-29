@@ -150,7 +150,11 @@ fn lookup_chain(
     Ok(cache.Record(ips:)) ->
       Ok(
         list.map(ips, fn(entry) {
-          resource_record(qname, entry.ip, entry.remaining)
+          let remaining = case entry.remaining {
+            -1 -> 300
+            remaining -> remaining
+          }
+          resource_record(qname, entry.ip, remaining)
         }),
       )
     Error(_) ->

@@ -5,3 +5,4 @@ erl_crash.dump
 CLAUDE.md
 .overrides.env
 TODO.md
+/data/records.sqlite3

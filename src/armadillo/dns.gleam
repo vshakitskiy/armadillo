@@ -200,7 +200,7 @@ pub fn decode(data: BitArray) {
               edns:,
             )),
           )
-        _ -> panic as "unreachable pattern!"
+        _ -> Error(Malformed)
       }
     }
     _ -> Error(NotEnough)

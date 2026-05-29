@@ -1,7 +1,7 @@
 -module(cache_ffi).
 
 -export([new/0, insert/4, lookup/2, delete/2, insert_cname/3, lookup_cname/1,
-         delete_cname/1, system_time_seconds/0]).
+         delete_cname/1, cleanup_expired/0, system_time_seconds/0]).
 
 new() ->
     ets:new(dns,
@@ -17,7 +17,16 @@ insert(QName, QType, Ip, Expiry) ->
 lookup(QName, QType) ->
     Now = erlang:system_time(second),
     Matches = ets:match_object(dns, {{QName, QType, '_'}, '_'}),
-    Valid = [{entry, Ip, Expiry - Now} || {{_, _, Ip}, Expiry} <- Matches, Expiry - Now > 0],
+    Valid =
+        [{entry,
+          Ip,
+          case Expiry of
+              -1 ->
+                  -1;
+              _ ->
+                  Expiry - Now
+          end}
+         || {{_, _, Ip}, Expiry} <- Matches, Expiry =:= -1 orelse Expiry - Now > 0],
     case Valid of
         [] ->
             case Matches of
@@ -56,6 +65,14 @@ lookup_cname(QName) ->
 
 delete_cname(QName) ->
     ets:match_delete(dns_cname, {{QName, '_'}, '_'}),
+    nil.
+
+cleanup_expired() ->
+    Now = system_time_seconds(),
+    ets:select_delete(dns,
+                      [{{{'_', '_', '_'}, '$1'}, [{'=/=', '$1', -1}, {'<', '$1', Now}], [true]}]),
+    ets:select_delete(dns_cname,
+                      [{{{'_', '_'}, '$1'}, [{'=/=', '$1', -1}, {'<', '$1', Now}], [true]}]),
     nil.
 
 system_time_seconds() ->
