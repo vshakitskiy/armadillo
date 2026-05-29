@@ -38,12 +38,7 @@ fn handle_message(
       case dns.decode(data) {
         Ok(dns.DecodedQuery(query)) -> {
           let resolve =
-            resolver.Resolve(
-              peer:,
-              query:,
-              original: data,
-              upstream: ip.IpV4(8, 8, 8, 8),
-            )
+            resolver.Resolve(peer:, query:, upstream: ip.IpV4(8, 8, 8, 8))
 
           let factory = factory.get_by_name(state.resolver_factory)
           let _ = factory.start_child(factory, resolve)

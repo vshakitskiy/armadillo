@@ -7,7 +7,7 @@ pub type CacheError {
 }
 
 pub type Record {
-  Record(ip: ip.Address, remaining: Int)
+  Record(ips: List(#(ip.Address, Int)))
 }
 
 @external(erlang, "cache_ffi", "new")
@@ -26,5 +26,5 @@ fn do_set(qname: String, qtype: dns.Type, ip: ip.Address, expiry: Int) -> Nil
 @external(erlang, "cache_ffi", "delete")
 pub fn delete(qname: String, qtype: dns.Type) -> Nil
 
-@external(erlang, "os", "system_time")
+@external(erlang, "cache_ffi", "system_time_seconds")
 fn system_time_seconds() -> Int
