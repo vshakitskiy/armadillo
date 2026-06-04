@@ -1,9 +1,9 @@
-import armadillo/dns/protocol as dns
-import armadillo/ip
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
+import server/dns/protocol as dns
+import server/ip
 
 pub type CacheError {
   NotFound

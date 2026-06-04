@@ -22,7 +22,7 @@ fn record_decoder() -> decode.Decoder(Record) {
 }
 
 pub fn open() -> sqlight.Connection {
-  let assert Ok(conn) = sqlight.open("file:./data/records.sqlite3")
+  let assert Ok(conn) = sqlight.open("file:../data/records.sqlite3")
 
   let query =
     "create table if not exists records (

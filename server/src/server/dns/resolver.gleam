@@ -1,7 +1,3 @@
-import armadillo/cache
-import armadillo/dns/protocol as dns
-import armadillo/dns/udp
-import armadillo/ip
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -10,6 +6,10 @@ import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
 import gleam/pair
+import server/cache
+import server/dns/protocol as dns
+import server/dns/udp
+import server/ip
 
 pub type Resolve {
   Resolve(peer: udp.Peer, query: dns.Query, upstream: ip.Address)

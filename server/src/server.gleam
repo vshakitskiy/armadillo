@@ -1,14 +1,14 @@
-import armadillo/api
-import armadillo/cache
-import armadillo/dns
-import armadillo/ip
-import armadillo/sql
 import gleam/erlang/application
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/result
+import server/api
+import server/cache
+import server/dns
+import server/ip
+import server/sql
 import wisp
 
 // oi, for the seek of testing, just run that:

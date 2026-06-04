@@ -1,13 +1,13 @@
-import armadillo/cache
-import armadillo/dns/protocol as dns
-import armadillo/env
-import armadillo/ip
-import armadillo/sql
 import ewe
 import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/json
+import server/cache
+import server/dns/protocol as dns
+import server/env
+import server/ip
+import server/sql
 import sqlight
 import wisp
 import wisp/wisp_ewe
@@ -71,7 +71,7 @@ fn handler(
       }
     }
 
-    http.Put, ["api", "records", domain] -> {
+    http.Patch, ["api", "records", domain] -> {
       use form_data <- wisp.require_form(request)
 
       case form_data.values {

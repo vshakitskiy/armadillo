@@ -1,11 +1,11 @@
-import armadillo/dns/protocol as dns
-import armadillo/dns/resolver
-import armadillo/dns/udp
-import armadillo/env
-import armadillo/ip
 import gleam/erlang/process
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/static_supervisor as supervisor
+import server/dns/protocol as dns
+import server/dns/resolver
+import server/dns/udp
+import server/env
+import server/ip
 
 pub fn supervised(
   resolver_name: process.Name(factory.Message(resolver.Resolve, Nil)),
