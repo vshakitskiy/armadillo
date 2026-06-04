@@ -20,8 +20,31 @@ pub type Entry {
 
 pub fn init(records: List(#(String, ip.Address))) {
   new()
-  list.each(records, fn(r) {
-    do_set(r.0, dns.A, r.1, -1)
+  list.each(records, fn(record) {
+    let #(domain, ip) = record
+    set_permanent(domain, dns.A, ip)
+  })
+}
+
+type Cleanup {
+  Cleanup
+}
+
+pub fn worker() {
+  supervision.worker(fn() {
+    actor.new_with_initialiser(1000, fn(self) {
+      process.send_after(self, 60_000, Cleanup)
+
+      actor.initialised(self)
+      |> actor.returning(Nil)
+      |> Ok
+    })
+    |> actor.on_message(fn(self, _message) {
+      cleanup_expired()
+      process.send_after(self, 60_000, Cleanup)
+      actor.continue(self)
+    })
+    |> actor.start()
   })
 }
 
@@ -30,6 +53,10 @@ fn new() -> Nil
 
 @external(erlang, "cache_ffi", "lookup")
 pub fn get(qname: String, qtype: dns.Type) -> Result(Record, CacheError)
+
+pub fn set_permanent(qname: String, qtype: dns.Type, ip: ip.Address) {
+  do_set(qname, qtype, ip, -1)
+}
 
 pub fn set(qname: String, qtype: dns.Type, ip: ip.Address, ttl_seconds: Int) {
   do_set(qname, qtype, ip, system_time_seconds() + ttl_seconds)
@@ -59,25 +86,3 @@ fn cleanup_expired() -> Nil
 
 @external(erlang, "cache_ffi", "system_time_seconds")
 fn system_time_seconds() -> Int
-
-type Cleanup {
-  Cleanup
-}
-
-pub fn worker() {
-  supervision.worker(fn() {
-    actor.new_with_initialiser(1000, fn(self) {
-      process.send_after(self, 60_000, Cleanup)
-
-      actor.initialised(self)
-      |> actor.returning(Nil)
-      |> Ok
-    })
-    |> actor.on_message(fn(self, _message) {
-      cleanup_expired()
-      process.send_after(self, 60_000, Cleanup)
-      actor.continue(self)
-    })
-    |> actor.start()
-  })
-}

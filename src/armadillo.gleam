@@ -1,3 +1,4 @@
+import armadillo/api
 import armadillo/cache
 import armadillo/dns
 import armadillo/ip
@@ -8,9 +9,10 @@ import gleam/list
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/result
+import wisp
 
 // oi, for the seek of testing, just run that:
-// dig @127.0.0.1 -p 5003 google.com A
+// dig @127.0.0.1 google.com A
 
 pub fn main() -> Nil {
   process.sleep_forever()
@@ -20,6 +22,8 @@ pub fn start(
   _type: application.StartType,
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
+  wisp.configure_logger()
+
   let conn = sql.open()
   let assert Ok(rows) = sql.get_records(conn)
   let records =
@@ -36,6 +40,7 @@ pub fn start(
   supervisor.new(supervisor.OneForOne)
   |> supervisor.add(dns.supervised(resolver_name))
   |> supervisor.add(cache.worker())
+  |> supervisor.add(api.supervised(conn))
   |> supervisor.start()
   |> result.map(fn(started) { started.pid })
 }

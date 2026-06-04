@@ -1,9 +1,18 @@
 import gleam/dynamic/decode
+import gleam/json
 import gleam/result
 import sqlight
 
 pub type Record {
   Record(domain: String, ip: String)
+}
+
+pub fn record_to_json(record: Record) -> json.Json {
+  let Record(domain:, ip:) = record
+  json.object([
+    #("domain", json.string(domain)),
+    #("ip", json.string(ip)),
+  ])
 }
 
 fn record_decoder() -> decode.Decoder(Record) {

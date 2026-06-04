@@ -72,6 +72,7 @@ pub type Type {
   AAAA
   SRV
   ANYType
+  Unknown(Int)
 }
 
 pub type Class {
@@ -375,7 +376,7 @@ fn decode_type(value: Int) -> Result(Type, DecodeError) {
     28 -> Ok(AAAA)
     33 -> Ok(SRV)
     255 -> Ok(ANYType)
-    _ -> Error(Malformed)
+    n -> Ok(Unknown(n))
   }
 }
 
@@ -573,6 +574,7 @@ fn encode_type(type_: Type) -> Int {
     AAAA -> 28
     SRV -> 33
     ANYType -> 255
+    Unknown(n) -> n
   }
 }
 

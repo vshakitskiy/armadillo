@@ -212,6 +212,7 @@ fn encode_response(query: dns.Query, answers: List(dns.ResourceRecord)) {
     additional: [],
     edns: option.None,
   )
+  |> echo
   |> dns.encode_response
 }
 

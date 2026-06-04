@@ -6,3 +6,5 @@ CLAUDE.md
 .overrides.env
 TODO.md
 /data/records.sqlite3
+conf.json
+tun.json
