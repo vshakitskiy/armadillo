@@ -1,4 +1,5 @@
 import ewe
+import gleam/dynamic/decode
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -8,6 +9,7 @@ import server/dns/protocol as dns
 import server/env
 import server/ip
 import server/sql
+import shared/records
 import sqlight
 import wisp
 import wisp/wisp_ewe
@@ -40,18 +42,17 @@ fn handler(
     http.Get, ["api", "records"] ->
       case sql.get_records(context.conn) {
         Ok(records) ->
-          json.array(records, of: sql.record_to_json)
+          json.array(records, of: records.to_json)
           |> json.to_string
           |> wisp.json_response(200)
         Error(_error) -> wisp.internal_server_error()
       }
 
     http.Post, ["api", "records"] -> {
-      use form_data <- wisp.require_form(request)
+      use json <- wisp.require_json(request)
 
-      case form_data.values {
-        [#("domain", domain), #("ip", string_ip)]
-        | [#("ip", string_ip), #("domain", domain)] -> {
+      case decode.run(json, records.json_decoder()) {
+        Ok(records.Record(domain:, ip: string_ip)) -> {
           case ip.from_string(string_ip) {
             Ok(parsed_ip) -> {
               case sql.insert_record(context.conn, domain, string_ip) {
@@ -67,15 +68,15 @@ fn handler(
             Error(Nil) -> wisp.bad_request("Invalid ip value")
           }
         }
-        _ -> wisp.bad_request("Invalid form data")
+        Error(_) -> wisp.bad_request("Invalid form data")
       }
     }
 
     http.Patch, ["api", "records", domain] -> {
-      use form_data <- wisp.require_form(request)
+      use json <- wisp.require_json(request)
 
-      case form_data.values {
-        [#("ip", string_ip)] -> {
+      case decode.run(json, decode.string) {
+        Ok(string_ip) -> {
           case ip.from_string(string_ip) {
             Ok(parsed_ip) -> {
               case sql.update_record(context.conn, domain, string_ip) {
@@ -89,7 +90,7 @@ fn handler(
             Error(Nil) -> wisp.bad_request("Invalid ip value")
           }
         }
-        _ -> wisp.bad_request("Invalid form data")
+        Error(_) -> wisp.bad_request("Invalid form data")
       }
     }
 

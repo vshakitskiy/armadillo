@@ -1,25 +1,7 @@
 import gleam/dynamic/decode
-import gleam/json
 import gleam/result
+import shared/records
 import sqlight
-
-pub type Record {
-  Record(domain: String, ip: String)
-}
-
-pub fn record_to_json(record: Record) -> json.Json {
-  let Record(domain:, ip:) = record
-  json.object([
-    #("domain", json.string(domain)),
-    #("ip", json.string(ip)),
-  ])
-}
-
-fn record_decoder() -> decode.Decoder(Record) {
-  use domain <- decode.field(0, decode.string)
-  use ip <- decode.field(1, decode.string)
-  decode.success(Record(domain:, ip:))
-}
 
 pub fn open() -> sqlight.Connection {
   let assert Ok(conn) = sqlight.open("file:../data/records.sqlite3")
@@ -38,9 +20,9 @@ pub fn open() -> sqlight.Connection {
 
 pub fn get_records(
   conn: sqlight.Connection,
-) -> Result(List(Record), sqlight.Error) {
+) -> Result(List(records.Record), sqlight.Error) {
   let query = "select domain, ip from records;"
-  sqlight.query(query, on: conn, with: [], expecting: record_decoder())
+  sqlight.query(query, on: conn, with: [], expecting: records.index_decoder())
 }
 
 pub fn insert_record(
