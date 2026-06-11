@@ -1,5 +1,7 @@
 # Armadillo
 
+<!-- dig @127.0.0.1 google.com A -->
+
 A DNS server for my local network, powered by Gleam.
 
 ## The Vision

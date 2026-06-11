@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
+import shared/ip
 
 pub type DecodeError {
   NotEnough
@@ -46,11 +47,11 @@ pub type Response {
 }
 
 pub type Opcode {
-  QUERY
-  IQUERY
-  STATUS
-  NOTIFY
-  UPDATE
+  QueryOpcode
+  Iquery
+  Status
+  Notify
+  Update
 }
 
 pub type Rcode {
@@ -64,35 +65,51 @@ pub type Rcode {
 
 pub type Type {
   A
-  NS
-  CNAME
-  SOA
-  PTR
-  MX
-  AAAA
-  SRV
-  ANYType
+  Ns
+  Cname
+  Soa
+  Ptr
+  Mx
+  Aaaa
+  Srv
+  AnyType
   Unknown(Int)
 }
 
+pub fn type_to_string(t: Type) -> String {
+  case t {
+    A -> "A"
+    Aaaa -> "AAAA"
+    Cname -> "CNAME"
+    Ns -> "NS"
+    Mx -> "MX"
+    Ptr -> "PTR"
+    Soa -> "SOA"
+    Srv -> "SRV"
+    AnyType -> "ANY"
+    Unknown(n) -> "?" <> string.inspect(n)
+  }
+}
+
 pub type Class {
-  IN
-  CH
-  ANYClass
+  In
+  Ch
+  AnyClass
 }
 
 pub type Question {
-  Question(qname: String, qtype: Type, qclass: Class)
+  Question(qname: String, type_: Type, class: Class)
 }
 
 pub type ResourceRecord {
-  ResourceRecord(
-    name: String,
-    rtype: Type,
-    rclass: Class,
-    ttl: Int,
-    rdata: BitArray,
-  )
+  ResourceRecord(name: String, class: Class, ttl: Int, rdata: Rdata)
+}
+
+pub type Rdata {
+  AData(ip.Address)
+  AaaaData(ip.Address)
+  CnameData(String)
+  RawData(type_: Type, data: BitArray)
 }
 
 pub type Edns {
@@ -128,11 +145,11 @@ pub fn decode(data: BitArray) {
       remaining:bits,
     >> -> {
       use opcode <- result.try(case opcode {
-        0 -> Ok(QUERY)
-        1 -> Ok(IQUERY)
-        2 -> Ok(STATUS)
-        4 -> Ok(NOTIFY)
-        5 -> Ok(UPDATE)
+        0 -> Ok(QueryOpcode)
+        1 -> Ok(Iquery)
+        2 -> Ok(Status)
+        4 -> Ok(Notify)
+        5 -> Ok(Update)
         _ -> Error(Malformed)
       })
 
@@ -223,11 +240,10 @@ fn do_decode_questions(
     _ -> {
       use #(qname, remaining) <- result.try(decode_name(remaining, packet))
       case remaining {
-        <<qtype:16, qclass:16, remaining:bits>> -> {
-          use qtype <- result.try(decode_type(qtype))
-          use qclass <- result.try(decode_class(qclass))
+        <<type_:16, class:16, remaining:bits>> -> {
+          use class <- result.try(decode_class(class))
           do_decode_questions(remaining, packet, count - 1, [
-            Question(qname:, qtype:, qclass:),
+            Question(qname:, type_: decode_type(type_), class:),
             ..acc
           ])
         }
@@ -342,49 +358,66 @@ fn decode_record(name: String, remaining: BitArray, packet: BitArray) {
   case remaining {
     <<
       rtype:16,
-      rclass:16,
+      class:16,
       ttl:32,
       rdlength:16,
       rdata:bytes-size(rdlength),
       remaining:bits,
     >> -> {
-      use rtype <- result.try(decode_type(rtype))
-      use rclass <- result.try(decode_class(rclass))
-      let rdata = case rtype {
-        CNAME ->
-          case decode_name(rdata, packet) {
-            Ok(#(target, _)) -> encode_name(target)
-            Error(_) -> rdata
-          }
-        _ -> rdata
-      }
-      Ok(#(ResourceRecord(name:, rtype:, rclass:, ttl:, rdata:), remaining))
+      use class <- result.try(decode_class(class))
+      use rdata <- result.try(decode_rdata(rtype, rdata, packet))
+      Ok(#(ResourceRecord(name:, class:, ttl:, rdata:), remaining))
     }
 
     _ -> Error(NotEnough)
   }
 }
 
-fn decode_type(value: Int) -> Result(Type, DecodeError) {
+fn decode_rdata(
+  rtype: Int,
+  rdata: BitArray,
+  packet: BitArray,
+) -> Result(Rdata, DecodeError) {
+  case decode_type(rtype) {
+    A ->
+      case ip.from_bit_array(rdata) {
+        Ok(address) -> Ok(AData(address))
+        Error(_) -> Error(Malformed)
+      }
+    Aaaa ->
+      case ip.from_bit_array(rdata) {
+        Ok(address) -> Ok(AaaaData(address))
+        Error(_) -> Error(Malformed)
+      }
+    Cname ->
+      case decode_name(rdata, packet) {
+        Ok(#(target, _)) -> Ok(CnameData(target))
+        Error(e) -> Error(e)
+      }
+    type_ -> Ok(RawData(type_, rdata))
+  }
+}
+
+fn decode_type(value: Int) -> Type {
   case value {
-    1 -> Ok(A)
-    2 -> Ok(NS)
-    5 -> Ok(CNAME)
-    6 -> Ok(SOA)
-    12 -> Ok(PTR)
-    15 -> Ok(MX)
-    28 -> Ok(AAAA)
-    33 -> Ok(SRV)
-    255 -> Ok(ANYType)
-    n -> Ok(Unknown(n))
+    1 -> A
+    2 -> Ns
+    5 -> Cname
+    6 -> Soa
+    12 -> Ptr
+    15 -> Mx
+    28 -> Aaaa
+    33 -> Srv
+    255 -> AnyType
+    n -> Unknown(n)
   }
 }
 
 fn decode_class(value: Int) -> Result(Class, DecodeError) {
   case value {
-    1 -> Ok(IN)
-    3 -> Ok(CH)
-    255 -> Ok(ANYClass)
+    1 -> Ok(In)
+    3 -> Ok(Ch)
+    255 -> Ok(AnyClass)
     _ -> Error(Malformed)
   }
 }
@@ -544,11 +577,11 @@ fn bool_to_int(value: Bool) -> Int {
 
 fn encode_opcode(opcode: Opcode) -> Int {
   case opcode {
-    QUERY -> 0
-    IQUERY -> 1
-    STATUS -> 2
-    NOTIFY -> 4
-    UPDATE -> 5
+    QueryOpcode -> 0
+    Iquery -> 1
+    Status -> 2
+    Notify -> 4
+    Update -> 5
   }
 }
 
@@ -566,43 +599,23 @@ fn encode_rcode(rcode: Rcode) -> Int {
 fn encode_type(type_: Type) -> Int {
   case type_ {
     A -> 1
-    NS -> 2
-    CNAME -> 5
-    SOA -> 6
-    PTR -> 12
-    MX -> 15
-    AAAA -> 28
-    SRV -> 33
-    ANYType -> 255
+    Ns -> 2
+    Cname -> 5
+    Soa -> 6
+    Ptr -> 12
+    Mx -> 15
+    Aaaa -> 28
+    Srv -> 33
+    AnyType -> 255
     Unknown(n) -> n
   }
 }
 
 fn encode_class(class: Class) -> Int {
   case class {
-    IN -> 1
-    CH -> 3
-    ANYClass -> 255
-  }
-}
-
-pub fn decode_cname_target(rdata: BitArray) -> Result(String, DecodeError) {
-  do_decode_cname_labels(rdata, [])
-}
-
-fn do_decode_cname_labels(
-  data: BitArray,
-  acc: List(String),
-) -> Result(String, DecodeError) {
-  case data {
-    <<0:8, _:bits>> -> Ok(string.join(list.reverse(acc), "."))
-    <<length:8, _:bits>> if length >= 0xC0 -> Error(Malformed)
-    <<length:8, label:bytes-size(length), remaining:bits>> ->
-      case bit_array.to_string(label) {
-        Ok(s) -> do_decode_cname_labels(remaining, [s, ..acc])
-        Error(_) -> Error(Malformed)
-      }
-    _ -> Error(NotEnough)
+    In -> 1
+    Ch -> 3
+    AnyClass -> 255
   }
 }
 
@@ -621,20 +634,32 @@ pub fn encode_name(name: String) -> BitArray {
 fn encode_question(question: Question) -> BitArray {
   <<
     encode_name(question.qname):bits,
-    encode_type(question.qtype):16,
-    encode_class(question.qclass):16,
+    encode_type(question.type_):16,
+    encode_class(question.class):16,
   >>
 }
 
 fn encode_record(record: ResourceRecord) -> BitArray {
+  let #(rtype, rdata) = encode_rdata(record.rdata)
+  let rtype = encode_type(rtype)
+
   <<
     encode_name(record.name):bits,
-    encode_type(record.rtype):16,
-    encode_class(record.rclass):16,
+    rtype:16,
+    encode_class(record.class):16,
     record.ttl:32,
-    bit_array.byte_size(record.rdata):16,
-    record.rdata:bits,
+    bit_array.byte_size(rdata):16,
+    rdata:bits,
   >>
+}
+
+fn encode_rdata(rdata: Rdata) -> #(Type, BitArray) {
+  case rdata {
+    AData(address) -> #(A, ip.to_bit_array(address))
+    AaaaData(address) -> #(Aaaa, ip.to_bit_array(address))
+    CnameData(name) -> #(Cname, encode_name(name))
+    RawData(type_, data) -> #(type_, data)
+  }
 }
 
 fn encode_edns(edns: Edns) -> BitArray {

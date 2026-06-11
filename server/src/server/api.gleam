@@ -10,6 +10,7 @@ import gleam/result
 import logging
 import server/cache
 import server/dns/protocol as dns
+import server/env
 import server/sql
 import shared/ip
 import shared/records
@@ -18,8 +19,6 @@ import wisp
 import wisp/wisp_ewe
 
 pub fn supervised(conn: sqlight.Connection) {
-  let context = Context(conn)
-
   let secret_key_base =
     envoy.get("API_SECRET_KEY_BASE")
     |> result.lazy_unwrap(fn() {
@@ -30,36 +29,23 @@ pub fn supervised(conn: sqlight.Connection) {
 
       wisp.random_string(32)
     })
+  let port = env.get_or("API_PORT", parse: int.parse, or: 3000, log: "3000")
 
-  let port = case envoy.get("API_PORT") {
-    Ok(port) -> {
-      case int.parse(port) {
-        Ok(port) -> port
-        Error(Nil) -> {
-          logging.log(
-            logging.Warning,
-            "Invalid API_PORT provided, using default value: 3000",
-          )
-
-          3000
-        }
-      }
-    }
-    Error(Nil) -> {
-      logging.log(
-        logging.Warning,
-        "No API_PORT provided, using default value: 3000",
-      )
-
-      3000
-    }
-  }
-
-  handler(_, context)
+  handler(_, Context(conn))
   |> wisp_ewe.handler(secret_key_base)
   |> ewe.new
   |> ewe.bind("0.0.0.0")
   |> ewe.listening(port:)
+  |> ewe.on_start(fn(scheme, address) {
+    let port = int.to_string(address.port)
+    let address = case address.ip {
+      ewe.IpV6(..) -> "[" <> ewe.ip_address_to_string(address.ip) <> "]"
+      ewe.IpV4(..) -> ewe.ip_address_to_string(address.ip)
+    }
+
+    let url = http.scheme_to_string(scheme) <> "://" <> address <> ":" <> port
+    logging.log(logging.Info, "UI listening on " <> url)
+  })
   |> ewe.supervised
 }
 

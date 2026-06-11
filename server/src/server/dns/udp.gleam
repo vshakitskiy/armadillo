@@ -84,6 +84,7 @@ pub type Builder(state, message) {
       Result(Initialised(state, message), String),
     handler: fn(state, Message(message)) -> Next(state, message),
     name: option.Option(process.Name(Message(message))),
+    on_start: fn(ip.Address, Int) -> Nil,
     port: Int,
     ipv6: Bool,
     reuseaddr: Bool,
@@ -101,6 +102,7 @@ pub fn new(
     initialise: fn(_self) { Ok(initialised(state)) },
     handler:,
     name: option.None,
+    on_start: fn(_, _) { Nil },
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -119,6 +121,7 @@ pub fn new_with_initialiser(
     initialise:,
     handler:,
     name: option.None,
+    on_start: fn(_, _) { Nil },
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -183,6 +186,13 @@ pub fn named(
   Builder(..builder, name: option.Some(name))
 }
 
+pub fn on_start(
+  builder: Builder(state, message),
+  callback: fn(ip.Address, Int) -> Nil,
+) -> Builder(state, message) {
+  Builder(..builder, on_start: callback)
+}
+
 type State(state, message) {
   State(
     socket: Socket,
@@ -207,6 +217,11 @@ pub fn start(
 
       case open(builder.port, options) {
         Ok(socket) -> {
+          case sockname(socket) {
+            Ok(#(addr, port)) -> builder.on_start(addr, port)
+            Error(_) -> Nil
+          }
+
           use Initialised(state, user_selector) <- result.try(
             builder.initialise(user),
           )
@@ -353,6 +368,9 @@ pub fn close(socket: Socket) -> Nil
 
 @external(erlang, "udp_ffi", "set_active")
 pub fn set_active(socket: Socket) -> Result(Nil, SocketError)
+
+@external(erlang, "udp_ffi", "sockname")
+fn sockname(socket: Socket) -> Result(#(ip.Address, Int), SocketError)
 
 @external(erlang, "udp_ffi", "coerce_socket_message")
 fn coerce_socket_message(record: dynamic.Dynamic) -> Message(message)

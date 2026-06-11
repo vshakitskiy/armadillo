@@ -1,7 +1,7 @@
 -module(udp_ffi).
 
 -export([open_udp/2, recv_udp/2, close_udp/1, coerce_socket_message/1, set_active/1,
-         parse_address/1, send_udp/4]).
+         parse_address/1, send_udp/4, sockname/1]).
 
 open_udp(Port, Options) ->
     gen_udp:open(Port, [binary | to_erl_options(Options)]).
@@ -71,6 +71,16 @@ set_active(Socket) ->
     case inet:setopts(Socket, [{active, once}]) of
         ok ->
             {ok, nil};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+sockname(Socket) ->
+    case inet:sockname(Socket) of
+        {ok, {{A, B, C, D}, Port}} ->
+            {ok, {{ip_v4, A, B, C, D}, Port}};
+        {ok, {{A, B, C, D, E, F, G, H}, Port}} ->
+            {ok, {{ip_v6, A, B, C, D, E, F, G, H}, Port}};
         {error, Reason} ->
             {error, Reason}
     end.

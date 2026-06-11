@@ -1,4 +1,3 @@
-import envoy
 import gleam/erlang/process
 import gleam/int
 import gleam/otp/factory_supervisor as factory
@@ -7,64 +6,27 @@ import logging
 import server/dns/protocol as dns
 import server/dns/resolver
 import server/dns/udp
+import server/env
 import shared/ip
 
 pub fn supervised(
   resolver_name: process.Name(factory.Message(resolver.Resolve, Nil)),
 ) {
-  let upstream = case envoy.get("DNS_UPSTREAM") {
-    Ok(upstream_string) -> {
-      case ip.from_string(upstream_string) {
-        Ok(upstream) -> {
-          logging.log(
-            logging.Info,
-            "Using " <> upstream_string <> " as DNS upstream",
-          )
-          upstream
-        }
-        Error(_) -> {
-          logging.log(
-            logging.Warning,
-            "Invalid DNS_UPSTREAM provided, using default value: 8.8.8.8",
-          )
+  let upstream =
+    env.get_or(
+      "DNS_UPSTREAM",
+      parse: ip.from_string,
+      or: ip.IpV4(8, 8, 8, 8),
+      log: "8.8.8.8",
+    )
 
-          ip.IpV4(8, 8, 8, 8)
-        }
-      }
-    }
-    Error(Nil) -> {
-      logging.log(
-        logging.Warning,
-        "No DNS_UPSTREAM provided, using default value: 8.8.8.8",
-      )
-
-      ip.IpV4(8, 8, 8, 8)
-    }
+  case ip.to_string(upstream) {
+    Ok(upstream) ->
+      logging.log(logging.Info, "Using " <> upstream <> " as a DNS upstream")
+    Error(Nil) -> Nil
   }
 
-  let port = case envoy.get("DNS_PORT") {
-    Ok(port) -> {
-      case int.parse(port) {
-        Ok(port) -> port
-        Error(Nil) -> {
-          logging.log(
-            logging.Warning,
-            "Invalid DNS_PORT provided, using default value: 53",
-          )
-
-          53
-        }
-      }
-    }
-    Error(Nil) -> {
-      logging.log(
-        logging.Warning,
-        "No DNS_PORT provided, using default value: 53",
-      )
-
-      53
-    }
-  }
+  let port = env.get_or("DNS_PORT", parse: int.parse, or: 53, log: "53")
 
   supervisor.new(supervisor.OneForAll)
   |> supervisor.add(resolver.factory(resolver_name))
@@ -72,6 +34,13 @@ pub fn supervised(
     udp.new(state: State(upstream:, resolver_name:), handler: handle_message)
     |> udp.port(port)
     |> udp.bind("0.0.0.0")
+    |> udp.on_start(fn(address, port) {
+      let assert Ok(address) = ip.to_string(address)
+      logging.log(
+        logging.Info,
+        "DNS listening on " <> address <> ":" <> int.to_string(port),
+      )
+    })
     |> udp.reuse_address
     |> udp.supervised,
   )

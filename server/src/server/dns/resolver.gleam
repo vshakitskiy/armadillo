@@ -1,11 +1,12 @@
 import gleam/erlang/process
-import gleam/int
 import gleam/list
 import gleam/option
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
-import gleam/pair
+import gleam/result
+import gleam/string
+import logging
 import server/cache
 import server/dns/protocol as dns
 import server/dns/udp
@@ -29,35 +30,21 @@ pub fn factory(named: process.Name(factory.Message(Resolve, Nil))) {
 fn handle_query(resolve: Resolve) -> Nil {
   let Resolve(peer:, query:, upstream:) = resolve
 
-  let #(keyed_questions, keyed_answers) =
-    list.index_fold(
-      over: query.questions,
-      from: #([], []),
-      with: fn(acc, question, index) {
-        let #(questions, answers) = acc
+  let peer_ip = ip.to_string(peer.ip) |> result.unwrap("?")
 
-        case lookup_chain(question.qname, question.qtype) {
-          Ok([]) | Error(Nil) -> #([#(index, question), ..questions], answers)
-          Ok(records) -> {
-            let keyed = list.map(records, pair.new(index, _))
-            #(questions, list.append(keyed, answers))
-          }
-        }
-      },
-    )
+  let #(local_answers, upstream_questions) =
+    list.fold(query.questions, #([], []), fn(acc, question) {
+      let #(answers, questions) = acc
+      case lookup_chain(question.qname, question.type_) {
+        Ok([]) | Error(Nil) -> #(answers, [question, ..questions])
+        Ok(records) -> #(list.append(answers, records), questions)
+      }
+    })
 
-  case list.map(keyed_questions, with: pair.second) {
+  case upstream_questions {
     [] -> {
-      let answers =
-        list.sort(keyed_answers, fn(a, b) {
-          int.compare(pair.first(a), pair.first(b))
-        })
-        |> list.map(pair.second)
-
-      let _ =
-        encode_response(query, answers)
-        |> udp.send(peer, _)
-
+      list.each(query.questions, log_resolved("○", peer_ip, _, local_answers))
+      let _ = encode_response(query, local_answers) |> udp.send(peer, _)
       Nil
     }
     questions -> {
@@ -80,66 +67,92 @@ fn handle_query(resolve: Resolve) -> Nil {
       case udp.recv(socket, 5000) {
         Ok(#(_peer, data)) -> {
           udp.close(socket)
-
           case dns.decode(data) {
             Ok(dns.DecodedResponse(response)) -> {
               list.each(response.answers, fn(record) {
-                case record.rtype {
-                  dns.CNAME ->
-                    case dns.decode_cname_target(record.rdata) {
-                      Ok(target) ->
-                        cache.set_cname(record.name, target, record.ttl)
-                      Error(_) -> Nil
-                    }
-                  _ ->
-                    case ip.from_bit_array(record.rdata) {
-                      Ok(ip) ->
-                        cache.set(record.name, record.rtype, ip, record.ttl)
-                      Error(_) -> Nil
-                    }
+                case record.rdata {
+                  dns.AData(a) -> cache.set(record.name, dns.A, a, record.ttl)
+                  dns.AaaaData(a) ->
+                    cache.set(record.name, dns.Aaaa, a, record.ttl)
+                  dns.CnameData(target) ->
+                    cache.set_cname(record.name, target, record.ttl)
+                  dns.RawData(_, _) -> Nil
                 }
               })
-
-              let cached =
-                keyed_answers
-                |> list.sort(fn(a, b) {
-                  int.compare(pair.first(a), pair.first(b))
-                })
-                |> list.map(pair.second)
-
+              list.each(
+                questions,
+                log_resolved("↑", peer_ip, _, response.answers),
+              )
               let _ =
                 dns.Response(
                   ..response,
                   id: query.id,
                   questions: query.questions,
-                  answers: list.append(cached, response.answers),
+                  answers: list.append(local_answers, response.answers),
                 )
                 |> dns.encode_response
                 |> udp.send(peer, _)
-
               Nil
             }
-
             Ok(dns.DecodedQuery(_))
             | Error(dns.NotEnough)
             | Error(dns.Malformed) -> {
-              let _ =
-                encode_serv_fail(query)
-                |> udp.send(peer, _)
+              list.each(questions, log_fail(peer_ip, _))
+              let _ = encode_serv_fail(query) |> udp.send(peer, _)
               Nil
             }
           }
         }
-
         Error(_) -> {
-          let _ =
-            encode_serv_fail(query)
-            |> udp.send(peer, _)
+          list.each(questions, log_fail(peer_ip, _))
+          let _ = encode_serv_fail(query) |> udp.send(peer, _)
           Nil
         }
       }
     }
   }
+}
+
+fn log_resolved(
+  symbol: String,
+  peer_ip: String,
+  question: dns.Question,
+  answers: List(dns.ResourceRecord),
+) -> Nil {
+  let ips =
+    answers
+    |> list.filter_map(fn(r) {
+      case r.rdata {
+        dns.AData(a) -> Ok(ip.to_string(a) |> result.unwrap("?"))
+        dns.AaaaData(a) -> Ok(ip.to_string(a) |> result.unwrap("?"))
+        dns.CnameData(_) | dns.RawData(_, _) -> Error(Nil)
+      }
+    })
+    |> string.join(" ")
+  logging.log(
+    logging.Info,
+    symbol
+      <> "  "
+      <> peer_ip
+      <> "  "
+      <> question.qname
+      <> " "
+      <> dns.type_to_string(question.type_)
+      <> "  →  "
+      <> ips,
+  )
+}
+
+fn log_fail(peer_ip: String, question: dns.Question) -> Nil {
+  logging.log(
+    logging.Warning,
+    "✗  "
+      <> peer_ip
+      <> "  "
+      <> question.qname
+      <> " "
+      <> dns.type_to_string(question.type_),
+  )
 }
 
 fn lookup_chain(
@@ -165,10 +178,9 @@ fn lookup_chain(
             let cname_record =
               dns.ResourceRecord(
                 name: qname,
-                rtype: dns.CNAME,
-                rclass: dns.IN,
+                class: dns.In,
                 ttl: remaining,
-                rdata: dns.encode_name(target),
+                rdata: dns.CnameData(target),
               )
             case lookup_chain(target, qtype) {
               Ok(tail) -> Ok(list.append(acc, [cname_record, ..tail]))
@@ -215,17 +227,11 @@ fn encode_response(query: dns.Query, answers: List(dns.ResourceRecord)) {
   |> dns.encode_response
 }
 
-fn resource_record(name: String, ip: ip.Address, ttl: Int) {
-  let rtype = case ip {
-    ip.IpV4(..) -> dns.A
-    ip.IpV6(..) -> dns.AAAA
+fn resource_record(name: String, addr: ip.Address, ttl: Int) {
+  let rdata = case addr {
+    ip.IpV4(..) -> dns.AData(addr)
+    ip.IpV6(..) -> dns.AaaaData(addr)
   }
 
-  dns.ResourceRecord(
-    name:,
-    rtype:,
-    rclass: dns.IN,
-    ttl:,
-    rdata: ip.to_bit_array(ip),
-  )
+  dns.ResourceRecord(name:, class: dns.In, ttl:, rdata:)
 }

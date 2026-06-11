@@ -1,5 +1,6 @@
 import gleam/erlang/application
 import gleam/erlang/process
+import gleam/io
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
@@ -11,17 +12,26 @@ import server/sql
 import shared/ip
 import wisp
 
-// oi, for the seek of testing, just run that:
-// dig @127.0.0.1 google.com A
+const name = "  __   ____  _  _   __   ____  __  __    __     __  
+ / _\\ (  _ \\( \\/ ) / _\\ (    \\(  )(  )  (  )   /  \\ 
+/    \\ )   // \\/ \\/    \\ ) D ( )( / (_/\\/ (_/\\(  O )
+\\_/\\_/(__\\_)\\_)(_/\\_/\\_/(____/(__)\\____/\\____/ \\__/"
 
 pub fn main() -> Nil {
+  io.println("")
   process.sleep_forever()
 }
+
+@external(erlang, "terminal_ffi", "clear")
+pub fn clear_terminal() -> Nil
 
 pub fn start(
   _type: application.StartType,
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
+  clear_terminal()
+  io.println("\n\n" <> name <> "\n\n")
+
   wisp.configure_logger()
 
   let conn = sql.open()
