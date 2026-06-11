@@ -23,11 +23,12 @@ FROM erlang:${ERLANG_VERSION}-alpine
 RUN apk add --no-cache libcap \
     && find /usr/local/lib/erlang -name beam.smp -exec setcap cap_net_bind_service=+ep {} \; \
     && addgroup --system armadillo \
-    && adduser --system armadillo -G armadillo
+    && adduser --system armadillo -G armadillo \
+    && mkdir -p /data \
+    && chown armadillo:armadillo /data
 COPY --chown=armadillo:armadillo --from=server-build /app/server/build/erlang-shipment /app
 ENV DNS_PORT=53
 ENV DNS_UPSTREAM=8.8.8.8
-ENV API_SECRET_KEY_BASE=""
 ENV API_PORT=3000
 VOLUME /data
 WORKDIR /app

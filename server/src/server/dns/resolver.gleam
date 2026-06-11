@@ -79,10 +79,12 @@ fn handle_query(resolve: Resolve) -> Nil {
                   dns.RawData(_, _) -> Nil
                 }
               })
-              list.each(
-                questions,
-                log_resolved("↑", peer_ip, _, response.answers),
-              )
+              list.each(questions, log_resolved(
+                "↑",
+                peer_ip,
+                _,
+                response.answers,
+              ))
               let _ =
                 dns.Response(
                   ..response,

@@ -25,7 +25,7 @@ jobs:
         run: gleam format --check src
         working-directory: client
 
-        - name: format check shared
+      - name: format check shared
         run: gleam format --check src
         working-directory: shared
 
