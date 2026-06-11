@@ -57,18 +57,18 @@ $(which erl) -noshell -eval 'io:format("~s~n",[os:find_executable("beam.smp")]),
 sudo setcap cap_net_bind_service=+ep /path/to/beam.smp
 ```
 
-## Resolving issue with VPN
+## Resolving with VPN
 
-More of a guide for myself; took some time to figure out. When running a VPN 
+More of a guide for myself, took some time to figure out. When running a VPN 
 like vless in proxy or tun mode, it's very important to make sure the VPN 
 resolves domains via the correct DNS. Assuming all local DNS servers are 
-specified in the router panel on 192.168.1.1, here is what needs to be added on
+specified in the router panel on `192.168.1.1`, here is what needs to be added on
 the VPN client, in this case, Happ.
 
 For xray, include your router/DNS IP as one of the servers, and route LAN IPs 
 with the direct tag:
 
-```json
+```jsonc
 {
     // ...
     "dns": {
@@ -107,7 +107,7 @@ with the direct tag:
 
 For sing-box, provide rules for LAN IPs to go through the local tag:
 
-```json
+```jsonc
 {
     // ...
     "dns": {
