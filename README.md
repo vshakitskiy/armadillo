@@ -1,6 +1,8 @@
-# Armadillo
+# ![armadillo icon](https://github.com/user-attachments/assets/8dc753a7-fde8-43d7-9e6e-30bc1f26080d) Armadillo
 
 A self-hosted DNS server for homelab use, written in Gleam.
+
+[![armadillo showcase](https://github.com/user-attachments/assets/7361e6b2-c761-4eea-82d8-22f95c104324)](https://github.com/user-attachments/assets/7361e6b2-c761-4eea-82d8-22f95c104324)
 
 Configure it once on your router as the DNS resolver and every device on the 
 network resolves your local domains automatically.
