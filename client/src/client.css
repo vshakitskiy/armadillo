@@ -29,6 +29,8 @@
   --color-fg: #fffbe8;
   --color-muted: #9a9080;
   --color-subtle: #6a6258;
+  --breakpoint-xs: 447px;
+  --text-2xs: 10px;
 }
 
 * {

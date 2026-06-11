@@ -17,6 +17,7 @@ lustre_dev_tools = ">= 2.3.6 and < 3.0.0"
 
 [tools.lustre.dev]
 host = "0.0.0.0"
+port = 80
 proxy = { from = "/api", to = "http://192.168.1.41:3000/api" }
 
 [tools.lustre.html]

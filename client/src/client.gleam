@@ -317,75 +317,120 @@ fn view(model: Model) -> Element(Message) {
       Visible(content) -> view_popup(content, False, model.saving)
       Closing(content) -> view_popup(content, True, model.saving)
     },
-    html.div([attribute.class("max-w-2xl mx-auto p-8")], [
-      case model.error {
-        option.Some(message) ->
-          html.p(
-            [attribute.class("text-red-400 text-sm mb-4 bg-red-950 p-2 italic")],
-            [html.text(message)],
-          )
-        option.None -> element.none()
-      },
-      html.header([attribute.class("flex items-center mb-8")], [
-        html.img([
-          attribute.src("/armadillo.svg"),
-          attribute.class("size-10 mr-2"),
-        ]),
-        html.h1(
-          [attribute.class("text-2xl font-semibold tracking-tight mr-4")],
-          [
-            html.text("DNS Records"),
-          ],
+    html.div(
+      [
+        attribute.class(
+          "w-full max-w-sm xs:max-w-lg sm:max-w-2xl md:max-w-3xl lg:max-w-5xl xl:max-w-6xl mx-auto px-2 py-3 xs:px-5 xs:py-6 sm:px-9 sm:py-9 md:px-12 md:py-12 lg:px-16 lg:py-14",
         ),
-        html.button(
+      ],
+      [
+        case model.error {
+          option.Some(message) ->
+            html.p(
+              [
+                attribute.class(
+                  "text-red-400 text-xs sm:text-base md:text-lg mb-3 sm:mb-5 bg-red-950 p-2 italic",
+                ),
+              ],
+              [html.text(message)],
+            )
+          option.None -> element.none()
+        },
+        html.header(
           [
-            event.on_click(UserClickedInsert),
             attribute.class(
-              "w-8 h-8 rounded-md bg-accent text-fg flex items-center justify-center hover:bg-accent/80 transition-colors cursor-pointer",
+              "flex items-center mb-3 xs:mb-6 sm:mb-10 md:mb-12 lg:mb-14",
             ),
           ],
-          [view_add_icon()],
-        ),
-      ]),
-      case model.loading {
-        True ->
-          html.p([attribute.class("text-subtle text-sm italic")], [
-            html.text("Loading..."),
-          ])
-        False ->
-          html.table([attribute.class("w-full border-collapse")], [
-            html.thead([], [
-              html.tr([], [
-                html.th(
-                  [
-                    attribute.class(
-                      "text-left text-xs uppercase tracking-wider text-subtle pb-3 border-b border-elevated font-medium italic",
-                    ),
-                  ],
-                  [html.text("domain")],
+          [
+            html.div(
+              [
+                attribute.class(
+                  "bg-fg rounded-full size-6 xs:size-9 sm:size-12 md:size-14 lg:size-16 mr-2 flex items-center justify-center",
                 ),
-                html.th(
-                  [
-                    attribute.class(
-                      "text-left text-xs uppercase tracking-wider text-subtle pb-3 border-b border-elevated font-medium italic",
-                    ),
-                  ],
-                  [html.text("ip")],
-                ),
-                html.th([attribute.class("pb-3 border-b border-elevated")], []),
-              ]),
-            ]),
-            keyed.tbody(
-              [],
-              list.map(model.records, view_record(
-                model.deleting,
-                global_busy,
-                _,
-              )),
+              ],
+              [
+                html.img([
+                  attribute.src("/armadillo.png"),
+                  attribute.class(
+                    "size-3 xs:size-5 sm:size-7 md:size-9 lg:size-10",
+                  ),
+                ]),
+              ],
             ),
-          ])
-      },
-    ]),
+            html.h1(
+              [
+                attribute.class(
+                  "text-xs xs:text-lg sm:text-2xl md:text-3xl lg:text-4xl font-semibold tracking-tight mr-2 xs:mr-3 sm:mr-5 lg:mr-6",
+                ),
+              ],
+              [html.text("DNS Records")],
+            ),
+            html.button(
+              [
+                event.on_click(UserClickedInsert),
+                attribute.class(
+                  "w-5 h-5 xs:w-7 xs:h-7 sm:w-10 sm:h-10 md:w-11 md:h-11 lg:w-12 lg:h-12 rounded-md bg-accent text-fg flex items-center justify-center hover:bg-accent/80 transition-colors cursor-pointer",
+                ),
+              ],
+              [view_add_icon()],
+            ),
+          ],
+        ),
+        case model.loading {
+          True ->
+            html.p(
+              [
+                attribute.class(
+                  "text-subtle text-xs xs:text-base sm:text-lg md:text-xl italic",
+                ),
+              ],
+              [
+                html.text("Loading..."),
+              ],
+            )
+          False ->
+            html.table([attribute.class("w-full border-collapse")], [
+              html.thead([], [
+                html.tr([], [
+                  html.th(
+                    [
+                      attribute.class(
+                        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
+                      ),
+                    ],
+                    [html.text("domain")],
+                  ),
+                  html.th(
+                    [
+                      attribute.class(
+                        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
+                      ),
+                    ],
+                    [html.text("ip")],
+                  ),
+                  html.th(
+                    [
+                      attribute.class(
+                        "pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated",
+                      ),
+                    ],
+                    [],
+                  ),
+                ]),
+              ]),
+              keyed.tbody(
+                [],
+                list.map(model.records, view_record(
+                  model.deleting,
+                  global_busy,
+                  _,
+                )),
+              ),
+            ])
+        },
+      ],
+    ),
   ])
 }
 
@@ -421,7 +466,7 @@ fn view_popup(
       html.div(
         [
           attribute.class(
-            "bg-surface border border-elevated rounded-xl p-6 w-80 shadow-2xl "
+            "bg-surface border border-elevated rounded-xl p-3 xs:p-5 sm:p-8 md:p-10 lg:p-12 w-[calc(100vw-3rem)] max-w-xs xs:max-w-sm sm:max-w-md md:max-w-lg lg:max-w-xl xl:max-w-2xl shadow-2xl "
             <> card_class,
           ),
           event.on("animationend", decode.success(PopupAnimationEnded)),
@@ -446,16 +491,23 @@ fn view_insert(
   }
 
   html.form([event.on_submit(handle_submit), attribute.class("flex flex-col")], [
-    html.h2([attribute.class("text-base font-semibold mb-4")], [
-      html.text("Add Record"),
-    ]),
+    html.h2(
+      [
+        attribute.class(
+          "text-xs xs:text-base sm:text-xl md:text-2xl font-semibold mb-2 xs:mb-4 sm:mb-6 md:mb-8",
+        ),
+      ],
+      [
+        html.text("Add Record"),
+      ],
+    ),
     view_input(form, is: "text", name: "domain", label: "Domain"),
     view_input(form, is: "text", name: "ip", label: "IP"),
     html.button(
       [
         attribute.disabled(saving),
         attribute.class(
-          "mt-2 py-2 rounded-lg text-sm font-medium"
+          "mt-2 xs:mt-4 sm:mt-6 py-1.5 xs:py-3 sm:py-4 md:py-5 rounded-lg text-xs xs:text-sm sm:text-base md:text-lg font-medium w-full "
           <> case saving {
             True -> "bg-accent/50 text-fg/50 cursor-not-allowed"
             False ->
@@ -491,7 +543,7 @@ fn view_update(
       [
         attribute.disabled(saving),
         attribute.class(
-          "mt-2 py-2 rounded-lg text-sm font-medium"
+          "mt-2 xs:mt-4 sm:mt-6 py-1.5 xs:py-3 sm:py-4 md:py-5 rounded-lg text-xs xs:text-sm sm:text-base md:text-lg font-medium w-full "
           <> case saving {
             True -> "bg-accent/50 text-fg/50 cursor-not-allowed"
             False ->
@@ -516,7 +568,9 @@ fn view_input(
     html.label(
       [
         attribute.for(name),
-        attribute.class("text-xs uppercase tracking-wider text-muted italic"),
+        attribute.class(
+          "text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-muted italic",
+        ),
       ],
       [html.text(label)],
     ),
@@ -526,7 +580,7 @@ fn view_input(
       attribute.name(name),
       attribute.default_value(form.field_value(form, name)),
       attribute.class(
-        "bg-elevated border border-elevated rounded-lg px-3 py-2 text-fg text-sm outline-none focus:border-accent",
+        "bg-elevated border border-elevated rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 md:px-6 md:py-4 text-fg text-xs xs:text-sm sm:text-base md:text-lg outline-none focus:border-accent",
       ),
     ]),
     ..list.map(errors, fn(message) {
@@ -541,10 +595,11 @@ fn view_add_icon() -> Element(msg) {
   svg.svg(
     [
       attribute.attribute("xmlns", "http://www.w3.org/2000/svg"),
-      attribute.attribute("width", "16"),
-      attribute.attribute("height", "16"),
       attribute.attribute("fill", "currentColor"),
       attribute.attribute("viewBox", "0 0 16 16"),
+      attribute.class(
+        "size-4 xs:size-5 sm:size-6 md:size-7 lg:size-8 xl:size-9",
+      ),
     ],
     [
       svg.path([
@@ -583,7 +638,7 @@ fn view_record(
         [
           event.on_click(UserConfirmedDelete(domain)),
           attribute.class(
-            "text-red-400 hover:text-red-300 text-xs transition-colors cursor-pointer italic",
+            "text-red-400 hover:text-red-300 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer italic",
           ),
         ],
         [html.text("Sure?")],
@@ -593,7 +648,7 @@ fn view_record(
         [
           event.on_click(UserClickedDelete(domain)),
           attribute.class(
-            "text-subtle hover:text-red-400 text-xs transition-colors cursor-pointer",
+            "text-subtle hover:text-red-400 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer",
           ),
         ],
         [html.text("Delete")],
@@ -601,21 +656,36 @@ fn view_record(
   }
 
   html.tr([attribute.class(row_class)], [
-    html.td([attribute.class("py-3 text-sm text-fg")], [
-      html.text(domain),
-    ]),
-    html.td([attribute.class("py-3 text-sm text-muted")], [
-      html.text(ip),
-    ]),
-    html.td([attribute.class("py-3 text-right")], [
+    html.td(
+      [
+        attribute.class(
+          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-fg",
+        ),
+      ],
+      [
+        html.text(domain),
+      ],
+    ),
+    html.td(
+      [
+        attribute.class(
+          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-muted",
+        ),
+      ],
+      [
+        html.text(ip),
+      ],
+    ),
+    html.td([attribute.class("py-1 xs:py-3 sm:py-4 md:py-5 text-right")], [
       html.button(
         [
           event.on_click(UserClickedEdit(records.Record(domain:, ip:))),
           attribute.class(
-            "text-subtle hover:text-fg text-xs transition-colors cursor-pointer "
+            "text-subtle hover:text-fg text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer "
             <> case deleting {
-              option.Some(pending) if pending == domain -> "mr-[19.5px]"
-              _ -> "mr-3"
+              option.Some(pending) if pending == domain ->
+                "mr-[10px] xs:mr-[20.5px] sm:mr-[25.5px] md:mr-[31px]"
+              _ -> "mr-1 xs:mr-3 sm:mr-4 md:mr-5"
             },
           ),
         ],
