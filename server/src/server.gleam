@@ -7,8 +7,8 @@ import gleam/result
 import server/api
 import server/cache
 import server/dns
-import server/ip
 import server/sql
+import shared/ip
 import wisp
 
 // oi, for the seek of testing, just run that:

@@ -13,6 +13,7 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import rsvp
+import shared/ip
 import shared/records
 
 pub fn main() {
@@ -56,9 +57,31 @@ fn new_insert_form() -> form.Form(records.Record) {
       form.parse_string |> form.check_not_empty,
     )
 
-    use ip <- form.field("ip", form.parse_string |> form.check_not_empty)
+    use ip <- form.field("ip", parse_ip())
 
     form.success(records.Record(domain:, ip:))
+  })
+}
+
+fn new_update_form() -> form.Form(String) {
+  form.new({
+    use ip <- form.field("ip", parse_ip())
+
+    form.success(ip)
+  })
+}
+
+fn parse_ip() {
+  form.parse(fn(values) {
+    case values {
+      ["", ..] -> Error(#("", "must not be blank"))
+      [ip, ..] ->
+        case ip.from_string(ip) {
+          Ok(..) -> Ok(ip)
+          Error(..) -> Error(#("", "must be valid ip"))
+        }
+      _ -> Error(#("", "must not be blank"))
+    }
   })
 }
 
@@ -81,6 +104,17 @@ fn insert_records(
 ) -> effect.Effect(Message) {
   rsvp.expect_ok_response(handle_response(record, _))
   |> rsvp.post("/api/records", records.to_json(record), _)
+}
+
+fn update_record(
+  record: records.Record,
+  on_response handle_response: fn(
+    records.Record,
+    Result(response.Response(String), rsvp.Error(String)),
+  ) -> Message,
+) -> effect.Effect(Message) {
+  rsvp.expect_ok_response(handle_response(record, _))
+  |> rsvp.patch("/api/records/" <> record.domain, json.string(record.ip), _)
 }
 
 fn delete_record(
@@ -167,13 +201,40 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
     Model(popup: Insert(..), ..), ApiInsertReturned(_record, result: Error(_))
     -> {
       let error = option.Some("Something went wrong inserting record!")
-      #(Model(..model, loading: False, error:), effect.none())
+      #(Model(..model, saving: False, error:), effect.none())
     }
     Model(..), ApiInsertReturned(..) -> panic as "unreachable!"
 
-    _model, UserClickedEdit(..) -> todo
-    _model, UserSubmittedUpdateForm(..) -> todo
-    _, ApiUpdateReturned(updated_record:, result:) -> todo
+    Model(popup: Hidden, ..), UserClickedEdit(current_record) -> {
+      #(
+        Model(..model, popup: Update(current_record, new_update_form())),
+        effect.none(),
+      )
+    }
+    _model, UserClickedEdit(..) -> panic as "unreachable!"
+
+    Model(popup: Update(..), ..), UserSubmittedUpdateForm(domain, form: Ok(ip))
+    -> #(
+      Model(..model, saving: True),
+      update_record(records.Record(domain:, ip:), ApiUpdateReturned),
+    )
+    Model(popup: Update(record, ..), ..),
+      UserSubmittedUpdateForm(form: Error(form), ..)
+    -> #(Model(..model, popup: Update(record, form)), effect.none())
+    _model, UserSubmittedUpdateForm(..) -> panic as "unreachable!"
+
+    Model(popup: Update(..), ..),
+      ApiUpdateReturned(record, result: Ok(_response))
+    -> {
+      let records = list.key_set(model.records, record.domain, record.ip)
+      #(Model(..model, records:, saving: False, popup: Hidden), effect.none())
+    }
+    Model(popup: Update(..), ..), ApiUpdateReturned(_record, result: Error(_))
+    -> {
+      let error = option.Some("Something went wrong updating record!")
+      #(Model(..model, saving: False, error:), effect.none())
+    }
+    Model(..), ApiUpdateReturned(..) -> panic as "unreachable!"
 
     model, UserClickedDelete(domain) -> #(
       Model(..model, saving: True),

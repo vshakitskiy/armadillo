@@ -1,30 +1,65 @@
+import envoy
 import ewe
 import gleam/dynamic/decode
 import gleam/http
 import gleam/http/request
 import gleam/http/response
+import gleam/int
 import gleam/json
+import gleam/result
+import logging
 import server/cache
 import server/dns/protocol as dns
-import server/env
-import server/ip
 import server/sql
+import shared/ip
 import shared/records
 import sqlight
 import wisp
 import wisp/wisp_ewe
 
 pub fn supervised(conn: sqlight.Connection) {
-  let secret_key_base =
-    env.get_string_or("API_SECRET_KEY_BASE", or: wisp.random_string(32))
-
   let context = Context(conn)
+
+  let secret_key_base =
+    envoy.get("API_SECRET_KEY_BASE")
+    |> result.lazy_unwrap(fn() {
+      logging.log(
+        logging.Warning,
+        "No API_SECRET_KEY_BASE provided, using random value",
+      )
+
+      wisp.random_string(32)
+    })
+
+  let port = case envoy.get("API_PORT") {
+    Ok(port) -> {
+      case int.parse(port) {
+        Ok(port) -> port
+        Error(Nil) -> {
+          logging.log(
+            logging.Warning,
+            "Invalid API_PORT provided, using default value: 3000",
+          )
+
+          3000
+        }
+      }
+    }
+    Error(Nil) -> {
+      logging.log(
+        logging.Warning,
+        "No API_PORT provided, using default value: 3000",
+      )
+
+      3000
+    }
+  }
 
   handler(_, context)
   |> wisp_ewe.handler(secret_key_base)
   |> ewe.new
   |> ewe.bind("0.0.0.0")
-  |> ewe.listening(port: env.get_int_or("API_PORT", or: 3000))
+  |> ewe.listening(port:)
   |> ewe.supervised
 }
 

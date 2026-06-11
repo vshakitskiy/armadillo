@@ -9,7 +9,7 @@ import gleam/pair
 import server/cache
 import server/dns/protocol as dns
 import server/dns/udp
-import server/ip
+import shared/ip
 
 pub type Resolve {
   Resolve(peer: udp.Peer, query: dns.Query, upstream: ip.Address)
@@ -212,7 +212,6 @@ fn encode_response(query: dns.Query, answers: List(dns.ResourceRecord)) {
     additional: [],
     edns: option.None,
   )
-  |> echo
   |> dns.encode_response
 }
 

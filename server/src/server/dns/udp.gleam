@@ -7,7 +7,7 @@ import gleam/option
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
-import server/ip
+import shared/ip
 
 pub type Socket
 

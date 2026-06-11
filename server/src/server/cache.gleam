@@ -3,7 +3,7 @@ import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
 import server/dns/protocol as dns
-import server/ip
+import shared/ip
 
 pub type CacheError {
   NotFound
