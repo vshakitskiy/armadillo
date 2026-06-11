@@ -1,0 +1,4 @@
+**/build/
+**/.lustre/
+**/node_modules/
+data/

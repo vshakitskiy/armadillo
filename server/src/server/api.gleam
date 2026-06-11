@@ -125,6 +125,12 @@ fn handler(
       }
     }
 
-    _, _ -> wisp.not_found()
+    _, _ -> {
+      let assert Ok(priv) = wisp.priv_directory("server")
+
+      wisp.serve_static(request, under: "/", from: priv, next: fn() {
+        wisp.not_found()
+      })
+    }
   }
 }

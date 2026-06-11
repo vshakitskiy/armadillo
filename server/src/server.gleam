@@ -20,6 +20,7 @@ const name = "  __   ____  _  _   __   ____  __  __    __     __
 pub fn main() -> Nil {
   io.println("")
   process.sleep_forever()
+  // <!-- dig @127.0.0.1 google.com A -->
 }
 
 @external(erlang, "terminal_ffi", "clear")
