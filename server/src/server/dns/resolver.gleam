@@ -65,10 +65,12 @@ fn handle_query(resolve: Resolve) -> Nil {
         udp.send(udp.Peer(socket:, ip: upstream, port: 53), upstream_query)
 
       case udp.recv(socket, 5000) {
-        Ok(#(_peer, data)) -> {
+        Ok(#(resp_peer, data)) -> {
           udp.close(socket)
           case dns.decode(data) {
-            Ok(dns.DecodedResponse(response)) -> {
+            Ok(dns.DecodedResponse(response))
+              if response.id == query.id && resp_peer.ip == upstream
+            -> {
               list.each(response.answers, fn(record) {
                 case record.rdata {
                   dns.AData(a) -> cache.set(record.name, dns.A, a, record.ttl)
@@ -96,7 +98,8 @@ fn handle_query(resolve: Resolve) -> Nil {
                 |> udp.send(peer, _)
               Nil
             }
-            Ok(dns.DecodedQuery(_))
+            Ok(dns.DecodedResponse(_))
+            | Ok(dns.DecodedQuery(_))
             | Error(dns.NotEnough)
             | Error(dns.Malformed) -> {
               list.each(questions, log_fail(peer_ip, _))
