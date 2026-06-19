@@ -1,0 +1,5 @@
+; Managed by armadillo - do not edit
+$TTL 300
+@ IN SOA ns.armadillo. hostmaster.armadillo. 1 3600 900 604800 300
+zhopa.com IN A 1.1.1.1
+zhopa2.com IN A 1.1.1.1
