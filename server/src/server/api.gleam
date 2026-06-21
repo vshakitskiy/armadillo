@@ -10,6 +10,7 @@ import gleam/json
 import gleam/result
 import logging
 import server/cache
+import server/dns/protocol as dns
 import server/env
 import server/zone
 import shared/records
@@ -60,7 +61,7 @@ fn handler(
   case request.method, wisp.path_segments(request) {
     http.Get, ["api", "records"] -> {
       zone.get_records(context.zone)
-      |> json.array(of: records.to_json)
+      |> json.array(of: records.record_to_json)
       |> json.to_string
       |> wisp.json_response(200)
     }
@@ -68,7 +69,7 @@ fn handler(
     http.Post, ["api", "records"] -> {
       use json <- wisp.require_json(request)
 
-      case decode.run(json, records.decoder()) {
+      case decode.run(json, records.record_decoder()) {
         Ok(record) -> {
           case zone.insert_record(context.zone, record) {
             Ok(Nil) -> {
@@ -87,35 +88,56 @@ fn handler(
         Error(_errors) -> wisp.bad_request("Invalid body")
       }
     }
-    // http.Patch, ["api", "records", domain] -> {
-    //   use json <- wisp.require_json(request)
-    //   case decode.run(json, decode.string) {
-    //     Ok(string_ip) -> {
-    //       case ip.from_string(string_ip) {
-    //         Ok(parsed_ip) -> {
-    //           case sql.update_record(context.conn, domain, string_ip) {
-    //             Ok(Nil) -> {
-    //               cache.set_permanent(domain, dns.A, parsed_ip)
-    //               wisp.no_content()
-    //             }
-    //             Error(_error) -> wisp.internal_server_error()
-    //           }
-    //         }
-    //         Error(Nil) -> wisp.bad_request("Invalid ip value")
-    //       }
-    //     }
-    //     Error(_) -> wisp.bad_request("Invalid form data")
-    //   }
-    // }
-    // http.Delete, ["api", "records", domain] -> {
-    //   case sql.delete_record(context.conn, domain) {
-    //     Ok(Nil) -> {
-    //       cache.delete(domain, dns.A)
-    //       wisp.no_content()
-    //     }
-    //     Error(_error) -> wisp.internal_server_error()
-    //   }
-    // }
+
+    http.Patch, ["api", "records"] -> {
+      use json <- wisp.require_json(request)
+
+      case decode.run(json, records.record_decoder()) {
+        Ok(record) -> {
+          case zone.update_record(context.zone, record) {
+            Ok(Nil) -> {
+              cache.set(record)
+              wisp.no_content()
+            }
+            Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+            Error(zone.NotFound) ->
+              wisp.not_found()
+              |> wisp.string_body("Record not found")
+            Error(zone.Conflict) -> panic as "unreachable!"
+          }
+        }
+        Error(_errors) -> wisp.bad_request("Invalid body")
+      }
+    }
+
+    http.Delete, ["api", "records"] -> {
+      use json <- wisp.require_json(request)
+
+      let decoder = {
+        use name <- decode.field("name", decode.string)
+        use type_ <- decode.field("type", records.type_decoder())
+
+        decode.success(#(name, type_))
+      }
+
+      case decode.run(json, decoder) {
+        Ok(#(name, type_)) -> {
+          let type_ = dns.from_record_type(type_)
+
+          case zone.delete_record(context.zone, name, type_) {
+            Ok(Nil) -> {
+              cache.delete(name, type_)
+              wisp.no_content()
+            }
+            Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+            Error(zone.Conflict) | Error(zone.NotFound) ->
+              panic as "unreachable!"
+          }
+        }
+        Error(_errors) -> wisp.bad_request("Invalid body")
+      }
+    }
+
     _, _ -> {
       let assert Ok(priv) = wisp.priv_directory("server")
 

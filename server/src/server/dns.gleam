@@ -26,11 +26,16 @@ pub fn supervised(
   )
 
   let port = env.get_or("DNS_PORT", parse: int.parse, or: 53, log: "53")
+  let default_ttl =
+    env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
 
   supervisor.new(supervisor.OneForAll)
   |> supervisor.add(resolver.factory(resolver_name))
   |> supervisor.add(
-    udp.new(state: State(upstream:, resolver_name:), handler: handle_message)
+    udp.new(
+      state: State(upstream:, resolver_name:, default_ttl:),
+      handler: handle_message,
+    )
     |> udp.port(port)
     |> udp.bind("0.0.0.0")
     |> udp.on_start(fn(address, port) {
@@ -52,6 +57,7 @@ pub type State {
   State(
     upstream: ip.Address,
     resolver_name: process.Name(factory.Message(resolver.Resolve, Nil)),
+    default_ttl: Int,
   )
 }
 

@@ -1,4 +1,3 @@
-import gleam/bytes_tree
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json

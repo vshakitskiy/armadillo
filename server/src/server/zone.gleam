@@ -36,11 +36,11 @@ pub type ZoneError {
   WriteFailure(simplifile.FileError)
 }
 
-pub fn worker(name: process.Name(Message), path: String) {
+pub fn worker(name: process.Name(Message), path: String, default_ttl: Int) {
   let builder =
     actor.new_with_initialiser(5000, fn(self) {
       // todo: figure out recovery
-      let assert Ok(zone) = read(path)
+      let assert Ok(zone) = read(path, default_ttl)
 
       actor.initialised(zone)
       |> actor.returning(self)
@@ -212,13 +212,12 @@ pub type ReadError {
   ParseError(String)
 }
 
-pub fn read(path: String) -> Result(Zone, ReadError) {
+pub fn read(path: String, default_ttl: Int) -> Result(Zone, ReadError) {
   use content <- result.try(
     simplifile.read(from: path)
     |> result.map_error(IoError),
   )
 
-  let ttl = env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
   let soa_minimum =
     env.get_or(
       "DNS_SOA_MINIMUM",
@@ -229,7 +228,13 @@ pub fn read(path: String) -> Result(Zone, ReadError) {
 
   parse(
     content,
-    Zone(file_path: path, serial: 0, ttl:, soa_minimum:, records: []),
+    Zone(
+      file_path: path,
+      serial: 0,
+      ttl: default_ttl,
+      soa_minimum:,
+      records: [],
+    ),
   )
 }
 
@@ -284,42 +289,33 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
               }
             }
 
+            [domain, ttl, "IN", type_, value] -> {
+              case int.parse(ttl) {
+                Ok(ttl) -> {
+                  use maybe <- result.try(parse_record(
+                    domain,
+                    ttl,
+                    type_,
+                    value,
+                  ))
+
+                  let records = case maybe {
+                    option.Some(record) -> [record, ..zone.records]
+                    option.None -> zone.records
+                  }
+                  parse(remaining, Zone(..zone, records:))
+                }
+                Error(Nil) -> Error(ParseError("invalid record ttl specified"))
+              }
+            }
+
             [domain, "IN", type_, value] -> {
-              use maybe <- result.try(case type_ {
-                "A" ->
-                  case ip.ipv4_from_string(value) {
-                    Ok(ip) ->
-                      Ok(
-                        option.Some(records.ARecord(
-                          name: domain,
-                          ttl: zone.ttl,
-                          ip:,
-                        )),
-                      )
-                    Error(Nil) -> Error(ParseError("invalid ip provided"))
-                  }
-                "AAAA" ->
-                  case ip.ipv6_from_string(value) {
-                    Ok(ip) ->
-                      Ok(
-                        option.Some(records.AaaaRecord(
-                          name: domain,
-                          ttl: zone.ttl,
-                          ip:,
-                        )),
-                      )
-                    Error(Nil) -> Error(ParseError("invalid ip provided"))
-                  }
-                "CNAME" ->
-                  Ok(
-                    option.Some(records.CnameRecord(
-                      name: domain,
-                      ttl: zone.ttl,
-                      target: value,
-                    )),
-                  )
-                _ -> Ok(option.None)
-              })
+              use maybe <- result.try(parse_record(
+                domain,
+                zone.ttl,
+                type_,
+                value,
+              ))
 
               let records = case maybe {
                 option.Some(record) -> [record, ..zone.records]
@@ -336,6 +332,24 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
   }
 }
 
+pub fn parse_record(domain: String, ttl: Int, type_: String, value: String) {
+  case type_ {
+    "A" ->
+      case ip.ipv4_from_string(value) {
+        Ok(ip) -> Ok(option.Some(records.ARecord(name: domain, ttl:, ip:)))
+        Error(Nil) -> Error(ParseError("invalid ip provided"))
+      }
+    "AAAA" ->
+      case ip.ipv6_from_string(value) {
+        Ok(ip) -> Ok(option.Some(records.AaaaRecord(name: domain, ttl:, ip:)))
+        Error(Nil) -> Error(ParseError("invalid ip provided"))
+      }
+    "CNAME" ->
+      Ok(option.Some(records.CnameRecord(name: domain, ttl:, target: value)))
+    _ -> Ok(option.None)
+  }
+}
+
 fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
   [
     "; Managed by armadillo - do not edit",
@@ -345,11 +359,15 @@ fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
       <> " 3600 900 604800 "
       <> int.to_string(zone.soa_minimum),
     ..list.map(zone.records, with: fn(record) {
-      let line = record.name <> " IN "
+      let prefix = case record.ttl == zone.ttl {
+        True -> record.name <> " IN "
+        False -> record.name <> " " <> int.to_string(record.ttl) <> " IN "
+      }
       case record {
-        records.ARecord(ip:, ..) -> line <> "A " <> ip.ipv4_to_string(ip)
-        records.AaaaRecord(ip:, ..) -> line <> "AAAA " <> ip.ipv6_to_string(ip)
-        records.CnameRecord(target:, ..) -> line <> "CNAME " <> target
+        records.ARecord(ip:, ..) -> prefix <> "A " <> ip.ipv4_to_string(ip)
+        records.AaaaRecord(ip:, ..) ->
+          prefix <> "AAAA " <> ip.ipv6_to_string(ip)
+        records.CnameRecord(target:, ..) -> prefix <> "CNAME " <> target
       }
     })
   ]

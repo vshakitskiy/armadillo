@@ -8,7 +8,7 @@ pub type Record {
   CnameRecord(name: String, ttl: Int, target: String)
 }
 
-pub fn decoder() -> decode.Decoder(Record) {
+pub fn record_decoder() -> decode.Decoder(Record) {
   use variant <- decode.field("type", decode.string)
   case variant {
     "a_record" -> {
@@ -37,7 +37,7 @@ pub fn decoder() -> decode.Decoder(Record) {
   }
 }
 
-pub fn to_json(record: Record) -> json.Json {
+pub fn record_to_json(record: Record) -> json.Json {
   case record {
     ARecord(name:, ttl:, ip:) ->
       json.object([
@@ -60,5 +60,29 @@ pub fn to_json(record: Record) -> json.Json {
         #("ttl", json.int(ttl)),
         #("target", json.string(target)),
       ])
+  }
+}
+
+pub type RecordType {
+  A
+  Aaaa
+  Cname
+}
+
+pub fn type_decoder() -> decode.Decoder(RecordType) {
+  use variant <- decode.then(decode.string)
+  case variant {
+    "a" -> decode.success(A)
+    "aaaa" -> decode.success(Aaaa)
+    "cname" -> decode.success(Cname)
+    _ -> decode.failure(A, "RecordType")
+  }
+}
+
+pub fn record_type_to_json(record_type: RecordType) -> json.Json {
+  case record_type {
+    A -> json.string("a")
+    Aaaa -> json.string("aaaa")
+    Cname -> json.string("cname")
   }
 }

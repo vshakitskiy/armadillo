@@ -5,6 +5,7 @@ import gleam/option
 import gleam/result
 import gleam/string
 import shared/ip
+import shared/records
 
 pub type DecodeError {
   NotEnough
@@ -76,6 +77,14 @@ pub type Type {
   Unknown(Int)
 }
 
+pub fn from_record_type(type_: records.RecordType) -> Type {
+  case type_ {
+    records.A -> A
+    records.Aaaa -> Aaaa
+    records.Cname -> Cname
+  }
+}
+
 pub fn type_to_string(t: Type) -> String {
   case t {
     A -> "A"
@@ -103,6 +112,32 @@ pub type Question {
 
 pub type ResourceRecord {
   ResourceRecord(name: String, class: Class, ttl: Int, rdata: Rdata)
+}
+
+pub fn record_to_resource_record(record: records.Record) -> ResourceRecord {
+  case record {
+    records.ARecord(name:, ttl:, ip:) ->
+      ResourceRecord(name:, class: In, ttl:, rdata: AData(ip))
+    records.AaaaRecord(name:, ttl:, ip:) ->
+      ResourceRecord(name:, class: In, ttl:, rdata: AaaaData(ip))
+    records.CnameRecord(name:, ttl:, target:) ->
+      ResourceRecord(name:, class: In, ttl:, rdata: CnameData(target))
+  }
+}
+
+pub fn resource_record_to_record(
+  record: ResourceRecord,
+  next: fn(records.Record) -> Nil,
+) -> Nil {
+  case record.rdata {
+    AData(ip) -> next(records.ARecord(name: record.name, ttl: record.ttl, ip:))
+    AaaaData(ip) ->
+      next(records.AaaaRecord(name: record.name, ttl: record.ttl, ip:))
+    CnameData(target) ->
+      next(records.CnameRecord(name: record.name, ttl: record.ttl, target:))
+
+    RawData(..) -> Nil
+  }
 }
 
 pub type Rdata {

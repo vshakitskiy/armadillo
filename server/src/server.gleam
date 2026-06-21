@@ -1,5 +1,6 @@
 import gleam/erlang/application
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
@@ -7,6 +8,7 @@ import gleam/result
 import server/api
 import server/cache
 import server/dns
+import server/env
 import server/zone
 import wisp
 
@@ -24,6 +26,8 @@ pub fn main() -> Nil {
 @external(erlang, "terminal_ffi", "clear")
 pub fn clear_terminal() -> Nil
 
+const zone_path = "../data/local.zone"
+
 pub fn start(
   _type: application.StartType,
   _args: List(arg),
@@ -33,14 +37,16 @@ pub fn start(
 
   wisp.configure_logger()
 
-  let assert Ok(zone) = zone.read("../data/local.zone")
+  let ttl = env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
+
+  let assert Ok(zone) = zone.read(zone_path, ttl)
   cache.init(zone.records)
 
   let resolver_name = process.new_name("resolver_factory")
   let zone_name = process.new_name("zone_worker")
 
   supervisor.new(supervisor.OneForOne)
-  |> supervisor.add(zone.worker(zone_name, "../data/local.zone"))
+  |> supervisor.add(zone.worker(zone_name, zone_path, ttl))
   |> supervisor.add(cache.worker())
   |> supervisor.add(dns.supervised(resolver_name))
   |> supervisor.add(api.supervised(process.named_subject(zone_name)))

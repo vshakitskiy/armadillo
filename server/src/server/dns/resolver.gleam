@@ -71,25 +71,9 @@ fn handle_query(resolve: Resolve) -> Nil {
             Ok(dns.DecodedResponse(response))
               if response.id == query.id && resp_peer.ip == upstream
             -> {
-              list.each(response.answers, fn(rr) {
-                case rr.rdata {
-                  dns.AData(ip) ->
-                    cache.set_with_ttl(
-                      records.ARecord(name: rr.name, ttl: rr.ttl, ip:),
-                      rr.ttl,
-                    )
-                  dns.AaaaData(ip) ->
-                    cache.set_with_ttl(
-                      records.AaaaRecord(name: rr.name, ttl: rr.ttl, ip:),
-                      rr.ttl,
-                    )
-                  dns.CnameData(target) ->
-                    cache.set_with_ttl(
-                      records.CnameRecord(name: rr.name, ttl: rr.ttl, target:),
-                      rr.ttl,
-                    )
-                  dns.RawData(..) -> Nil
-                }
+              list.each(response.answers, fn(record) {
+                use record <- dns.resource_record_to_record(record)
+                cache.set_with_ttl(record, record.ttl)
               })
 
               list.each(questions, log_resolved(
@@ -177,7 +161,7 @@ fn lookup_chain(
   qtype: dns.Type,
 ) -> Result(List(dns.ResourceRecord), Nil) {
   case cache.get(qname, qtype) {
-    Ok(matched) -> Ok(list.map(matched, to_resource_record))
+    Ok(matched) -> Ok(list.map(matched, dns.record_to_resource_record))
     Error(_) ->
       case cache.get(qname, dns.Cname) {
         Ok(cnames) ->
@@ -186,7 +170,12 @@ fn lookup_chain(
               records.CnameRecord(target:, ..) ->
                 case lookup_chain(target, qtype) {
                   Ok(tail) ->
-                    Ok(list.append(acc, [to_resource_record(record), ..tail]))
+                    Ok(
+                      list.append(acc, [
+                        dns.record_to_resource_record(record),
+                        ..tail
+                      ]),
+                    )
                   Error(_) -> Error(Nil)
                 }
               _ -> Error(Nil)
@@ -230,24 +219,4 @@ fn encode_response(query: dns.Query, answers: List(dns.ResourceRecord)) {
     edns: option.None,
   )
   |> dns.encode_response
-}
-
-fn to_resource_record(record: records.Record) -> dns.ResourceRecord {
-  let ttl = case record.ttl {
-    -1 -> 300
-    t -> t
-  }
-  case record {
-    records.ARecord(name:, ip:, ..) ->
-      dns.ResourceRecord(name:, class: dns.In, ttl:, rdata: dns.AData(ip))
-    records.AaaaRecord(name:, ip:, ..) ->
-      dns.ResourceRecord(name:, class: dns.In, ttl:, rdata: dns.AaaaData(ip))
-    records.CnameRecord(name:, target:, ..) ->
-      dns.ResourceRecord(
-        name:,
-        class: dns.In,
-        ttl:,
-        rdata: dns.CnameData(target),
-      )
-  }
 }
