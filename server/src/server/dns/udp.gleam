@@ -312,10 +312,10 @@ pub fn supervised(
 
 fn udp_settings(builder: Builder(state, message)) -> List(Option) {
   let interface = case builder.interface, builder.ipv6 {
-    Loopback, False -> Address(ip.IpV4(127, 0, 0, 1))
-    Loopback, True -> Address(ip.IpV6(0, 0, 0, 0, 0, 0, 0, 1))
-    Any, False -> Address(ip.IpV4(0, 0, 0, 0))
-    Any, True -> Address(ip.IpV6(0, 0, 0, 0, 0, 0, 0, 0))
+    Loopback, False -> Address(ip.V4(ip.Ipv4(127, 0, 0, 1)))
+    Loopback, True -> Address(ip.V6(ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 1)))
+    Any, False -> Address(ip.V4(ip.Ipv4(0, 0, 0, 0)))
+    Any, True -> Address(ip.V6(ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 0)))
     other, _ -> other
   }
 

@@ -3,27 +3,16 @@ import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
 import server/dns/protocol as dns
-import shared/ip
+import shared/records
 
 pub type CacheError {
   NotFound
   Expired
 }
 
-pub type Record {
-  Record(ips: List(Entry))
-}
-
-pub type Entry {
-  Entry(ip: ip.Address, remaining: Int)
-}
-
-pub fn init(records: List(#(String, ip.Address))) {
+pub fn init(records: List(records.Record)) -> Nil {
   new()
-  list.each(records, fn(record) {
-    let #(domain, ip) = record
-    set_permanent(domain, dns.A, ip)
-  })
+  list.each(records, set)
 }
 
 type Cleanup {
@@ -51,38 +40,28 @@ pub fn worker() {
 @external(erlang, "cache_ffi", "new")
 fn new() -> Nil
 
-@external(erlang, "cache_ffi", "lookup")
-pub fn get(qname: String, qtype: dns.Type) -> Result(Record, CacheError)
-
-pub fn set_permanent(qname: String, qtype: dns.Type, ip: ip.Address) {
-  do_set(qname, qtype, ip, -1)
+pub fn set(record: records.Record) -> Nil {
+  do_insert(record, -1)
 }
 
-pub fn set(qname: String, qtype: dns.Type, ip: ip.Address, ttl_seconds: Int) {
-  do_set(qname, qtype, ip, system_time_seconds() + ttl_seconds)
+pub fn set_with_ttl(record: records.Record, ttl: Int) -> Nil {
+  do_insert_with_ttl(record, ttl)
 }
 
 @external(erlang, "cache_ffi", "insert")
-fn do_set(qname: String, qtype: dns.Type, ip: ip.Address, expiry: Int) -> Nil
+fn do_insert(record: records.Record, expiry: Int) -> Nil
+
+@external(erlang, "cache_ffi", "insert_with_ttl")
+fn do_insert_with_ttl(record: records.Record, ttl: Int) -> Nil
+
+@external(erlang, "cache_ffi", "lookup")
+pub fn get(
+  name: String,
+  type_: dns.Type,
+) -> Result(List(records.Record), CacheError)
 
 @external(erlang, "cache_ffi", "delete")
-pub fn delete(qname: String, qtype: dns.Type) -> Nil
-
-pub fn set_cname(qname: String, target: String, ttl_seconds: Int) -> Nil {
-  do_set_cname(qname, target, system_time_seconds() + ttl_seconds)
-}
-
-@external(erlang, "cache_ffi", "insert_cname")
-fn do_set_cname(qname: String, target: String, expiry: Int) -> Nil
-
-@external(erlang, "cache_ffi", "lookup_cname")
-pub fn get_cname(qname: String) -> Result(List(#(String, Int)), CacheError)
-
-@external(erlang, "cache_ffi", "delete_cname")
-pub fn delete_cname(qname: String) -> Nil
+pub fn delete(name: String, type_: dns.Type) -> Nil
 
 @external(erlang, "cache_ffi", "cleanup_expired")
 fn cleanup_expired() -> Nil
-
-@external(erlang, "cache_ffi", "system_time_seconds")
-fn system_time_seconds() -> Int

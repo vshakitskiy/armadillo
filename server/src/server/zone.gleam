@@ -1,13 +1,180 @@
 import gleam/bool
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
+import gleam/otp/actor
+import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import server/dns/protocol as dns
 import server/env
 import shared/ip
+import shared/records
 import simplifile
+
+pub type Message {
+  GetRecords(reply_to: process.Subject(List(records.Record)))
+  InsertRecord(
+    reply_to: process.Subject(Result(Nil, ZoneError)),
+    record: records.Record,
+  )
+  UpdateRecord(
+    reply_to: process.Subject(Result(Nil, ZoneError)),
+    record: records.Record,
+  )
+  DeleteRecord(
+    reply_to: process.Subject(Result(Nil, ZoneError)),
+    name: String,
+    type_: dns.Type,
+  )
+}
+
+pub type ZoneError {
+  Conflict
+  NotFound
+  WriteFailure(simplifile.FileError)
+}
+
+pub fn worker(name: process.Name(Message), path: String) {
+  let builder =
+    actor.new_with_initialiser(5000, fn(self) {
+      // todo: figure out recovery
+      let assert Ok(zone) = read(path)
+
+      actor.initialised(zone)
+      |> actor.returning(self)
+      |> Ok
+    })
+    |> actor.on_message(handle_message)
+    |> actor.named(name)
+
+  supervision.worker(fn() { actor.start(builder) })
+}
+
+pub fn get_records(subject: process.Subject(Message)) -> List(records.Record) {
+  process.call(subject, waiting: 10_000, sending: GetRecords)
+}
+
+pub fn insert_record(
+  subject: process.Subject(Message),
+  record: records.Record,
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: InsertRecord(_, record))
+}
+
+pub fn update_record(
+  subject: process.Subject(Message),
+  record: records.Record,
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: UpdateRecord(_, record))
+}
+
+pub fn delete_record(
+  subject: process.Subject(Message),
+  name: String,
+  type_: dns.Type,
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: DeleteRecord(_, name, type_))
+}
+
+fn handle_message(zone: Zone, message: Message) {
+  case message {
+    GetRecords(reply_to:) -> {
+      process.send(reply_to, zone.records)
+      actor.continue(zone)
+    }
+
+    InsertRecord(reply_to:, record:) -> {
+      let conflict =
+        list.filter(zone.records, fn(current) { current.name == record.name })
+        |> list.any(fn(current) {
+          case record, current {
+            records.CnameRecord(..), _ | _, records.CnameRecord(..) -> True
+            records.ARecord(..), records.ARecord(..)
+            | records.AaaaRecord(..), records.AaaaRecord(..)
+            -> True
+            _, _ -> False
+          }
+        })
+
+      case conflict {
+        True -> {
+          process.send(reply_to, Error(Conflict))
+          actor.continue(zone)
+        }
+        False -> {
+          let zone =
+            Zone(
+              ..zone,
+              serial: next_serial(zone.serial),
+              records: list.append(zone.records, [record]),
+            )
+          handle_write(zone, reply_to)
+        }
+      }
+    }
+
+    UpdateRecord(reply_to:, record:) -> {
+      let #(found, records) =
+        list.map_fold(zone.records, False, fn(found, current) {
+          let check = case record, current {
+            records.ARecord(..), records.ARecord(..)
+            | records.AaaaRecord(..), records.AaaaRecord(..)
+            | records.CnameRecord(..), records.CnameRecord(..)
+            -> record.name == current.name
+            _, _ -> False
+          }
+
+          case check {
+            True -> #(True, record)
+            False -> #(found, current)
+          }
+        })
+
+      case found {
+        True -> {
+          let zone = Zone(..zone, serial: next_serial(zone.serial), records:)
+          handle_write(zone, reply_to)
+        }
+        False -> {
+          process.send(reply_to, Error(NotFound))
+          actor.continue(zone)
+        }
+      }
+    }
+
+    DeleteRecord(name:, type_:, reply_to:) -> {
+      let records =
+        list.filter(zone.records, fn(record) {
+          case record, type_ {
+            records.ARecord(..), dns.A
+            | records.AaaaRecord(..), dns.Aaaa
+            | records.CnameRecord(..), dns.Cname
+            -> record.name == name
+            _, _ -> False
+          }
+          |> bool.negate
+        })
+
+      let zone = Zone(..zone, serial: next_serial(zone.serial), records:)
+      handle_write(zone, reply_to)
+    }
+  }
+}
+
+fn handle_write(zone: Zone, reply_to: process.Subject(Result(Nil, ZoneError))) {
+  case write(zone) {
+    Ok(Nil) -> {
+      process.send(reply_to, Ok(Nil))
+      actor.continue(zone)
+    }
+    Error(error) -> {
+      process.send(reply_to, Error(WriteFailure(error)))
+      actor.continue(zone)
+    }
+  }
+}
 
 pub type Zone {
   Zone(
@@ -15,32 +182,34 @@ pub type Zone {
     serial: Int,
     ttl: Int,
     soa_minimum: Int,
-    records: List(ZoneRecord),
+    records: List(records.Record),
   )
 }
 
-pub type ZoneRecord {
-  ARecord(name: String, ttl: Int, ip: ip.Address)
-  AaaaRecord(name: String, ttl: Int, ip: ip.Address)
-  CnameRecord(name: String, ttl: Int, target: String)
+fn next_serial(current: Int) -> Int {
+  let #(y, m, d) = erlang_date()
+
+  let today_base = { y * 10_000 + m * 100 + d } * 100
+  case current >= today_base && current < today_base + 100 {
+    True -> current + 1
+    False -> today_base
+  }
 }
 
-pub fn record_type(record: ZoneRecord) -> dns.Type {
+@external(erlang, "erlang", "date")
+fn erlang_date() -> #(Int, Int, Int)
+
+pub fn record_type(record: records.Record) -> dns.Type {
   case record {
-    ARecord(..) -> dns.A
-    AaaaRecord(..) -> dns.Aaaa
-    CnameRecord(..) -> dns.Cname
+    records.ARecord(..) -> dns.A
+    records.AaaaRecord(..) -> dns.Aaaa
+    records.CnameRecord(..) -> dns.Cname
   }
 }
 
 pub type ReadError {
   IoError(simplifile.FileError)
   ParseError(String)
-}
-
-pub type ZoneError {
-  RecordNotFound
-  DuplicateRecord
 }
 
 pub fn read(path: String) -> Result(Zone, ReadError) {
@@ -118,22 +287,32 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
             [domain, "IN", type_, value] -> {
               use maybe <- result.try(case type_ {
                 "A" ->
-                  case ip.from_string(value) {
+                  case ip.ipv4_from_string(value) {
                     Ok(ip) ->
-                      Ok(option.Some(ARecord(name: domain, ttl: zone.ttl, ip:)))
+                      Ok(
+                        option.Some(records.ARecord(
+                          name: domain,
+                          ttl: zone.ttl,
+                          ip:,
+                        )),
+                      )
                     Error(Nil) -> Error(ParseError("invalid ip provided"))
                   }
                 "AAAA" ->
-                  case ip.from_string(value) {
+                  case ip.ipv6_from_string(value) {
                     Ok(ip) ->
                       Ok(
-                        option.Some(AaaaRecord(name: domain, ttl: zone.ttl, ip:)),
+                        option.Some(records.AaaaRecord(
+                          name: domain,
+                          ttl: zone.ttl,
+                          ip:,
+                        )),
                       )
                     Error(Nil) -> Error(ParseError("invalid ip provided"))
                   }
                 "CNAME" ->
                   Ok(
-                    option.Some(CnameRecord(
+                    option.Some(records.CnameRecord(
                       name: domain,
                       ttl: zone.ttl,
                       target: value,
@@ -157,7 +336,7 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
   }
 }
 
-pub fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
+fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
   [
     "; Managed by armadillo - do not edit",
     "$TTL " <> int.to_string(zone.ttl),
@@ -168,70 +347,12 @@ pub fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
     ..list.map(zone.records, with: fn(record) {
       let line = record.name <> " IN "
       case record {
-        ARecord(ip:, ..) ->
-          line <> "A " <> ip.to_string(ip) |> result.unwrap("")
-        AaaaRecord(ip:, ..) ->
-          line <> "AAAA " <> ip.to_string(ip) |> result.unwrap("")
-        CnameRecord(target:, ..) -> line <> "CNAME " <> target
+        records.ARecord(ip:, ..) -> line <> "A " <> ip.ipv4_to_string(ip)
+        records.AaaaRecord(ip:, ..) -> line <> "AAAA " <> ip.ipv6_to_string(ip)
+        records.CnameRecord(target:, ..) -> line <> "CNAME " <> target
       }
     })
   ]
   |> string.join("\n")
   |> simplifile.write(to: zone.file_path)
-}
-
-pub fn add(zone: Zone, record: ZoneRecord) -> Result(Zone, Nil) {
-  let conflict =
-    list.filter(zone.records, fn(current) { current.name == record.name })
-    |> list.any(fn(current) {
-      case record, current {
-        CnameRecord(..), _ | _, CnameRecord(..) -> True
-        ARecord(..), ARecord(..) | AaaaRecord(..), AaaaRecord(..) -> True
-        _, _ -> False
-      }
-    })
-
-  case conflict {
-    True -> Error(Nil)
-    False -> Ok(Zone(..zone, records: list.append(zone.records, [record])))
-  }
-}
-
-pub fn update(zone: Zone, record: ZoneRecord) -> Result(Zone, Nil) {
-  let #(found, records) =
-    list.map_fold(zone.records, False, fn(found, current) {
-      let check = case record, current {
-        ARecord(..), ARecord(..)
-        | AaaaRecord(..), AaaaRecord(..)
-        | CnameRecord(..), CnameRecord(..)
-        -> record.name == current.name
-        _, _ -> False
-      }
-
-      case check {
-        True -> #(True, record)
-        False -> #(found, current)
-      }
-    })
-
-  case found {
-    False -> Error(Nil)
-    True -> Ok(Zone(..zone, records:))
-  }
-}
-
-pub fn delete(zone: Zone, name: String, type_: dns.Type) -> Zone {
-  Zone(
-    ..zone,
-    records: list.filter(zone.records, fn(record) {
-      case record, type_ {
-        ARecord(..), dns.A
-        | AaaaRecord(..), dns.Aaaa
-        | CnameRecord(..), dns.Cname
-        -> record.name == name
-        _, _ -> False
-      }
-      |> bool.negate
-    }),
-  )
 }

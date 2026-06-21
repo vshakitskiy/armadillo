@@ -106,8 +106,8 @@ pub type ResourceRecord {
 }
 
 pub type Rdata {
-  AData(ip.Address)
-  AaaaData(ip.Address)
+  AData(ip.Ipv4)
+  AaaaData(ip.Ipv6)
   CnameData(String)
   RawData(type_: Type, data: BitArray)
 }
@@ -380,14 +380,14 @@ fn decode_rdata(
 ) -> Result(Rdata, DecodeError) {
   case decode_type(rtype) {
     A ->
-      case ip.from_bit_array(rdata) {
+      case ip.ipv4_from_bit_array(rdata) {
         Ok(address) -> Ok(AData(address))
-        Error(_) -> Error(Malformed)
+        _ -> Error(Malformed)
       }
     Aaaa ->
-      case ip.from_bit_array(rdata) {
+      case ip.ipv6_from_bit_array(rdata) {
         Ok(address) -> Ok(AaaaData(address))
-        Error(_) -> Error(Malformed)
+        _ -> Error(Malformed)
       }
     Cname ->
       case decode_name(rdata, packet) {
@@ -655,8 +655,8 @@ fn encode_record(record: ResourceRecord) -> BitArray {
 
 fn encode_rdata(rdata: Rdata) -> #(Type, BitArray) {
   case rdata {
-    AData(address) -> #(A, ip.to_bit_array(address))
-    AaaaData(address) -> #(Aaaa, ip.to_bit_array(address))
+    AData(address) -> #(A, ip.ipv4_to_bit_array(address))
+    AaaaData(address) -> #(Aaaa, ip.ipv6_to_bit_array(address))
     CnameData(name) -> #(Cname, encode_name(name))
     RawData(type_, data) -> #(type_, data)
   }

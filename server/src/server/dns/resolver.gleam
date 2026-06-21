@@ -4,13 +4,13 @@ import gleam/option
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
-import gleam/result
 import gleam/string
 import logging
 import server/cache
 import server/dns/protocol as dns
 import server/dns/udp
 import shared/ip
+import shared/records
 
 pub type Resolve {
   Resolve(peer: udp.Peer, query: dns.Query, upstream: ip.Address)
@@ -30,7 +30,7 @@ pub fn factory(named: process.Name(factory.Message(Resolve, Nil))) {
 fn handle_query(resolve: Resolve) -> Nil {
   let Resolve(peer:, query:, upstream:) = resolve
 
-  let peer_ip = ip.to_string(peer.ip) |> result.unwrap("?")
+  let peer_ip = ip.to_string(peer.ip)
 
   let #(local_answers, upstream_questions) =
     list.fold(query.questions, #([], []), fn(acc, question) {
@@ -71,16 +71,27 @@ fn handle_query(resolve: Resolve) -> Nil {
             Ok(dns.DecodedResponse(response))
               if response.id == query.id && resp_peer.ip == upstream
             -> {
-              list.each(response.answers, fn(record) {
-                case record.rdata {
-                  dns.AData(a) -> cache.set(record.name, dns.A, a, record.ttl)
-                  dns.AaaaData(a) ->
-                    cache.set(record.name, dns.Aaaa, a, record.ttl)
+              list.each(response.answers, fn(rr) {
+                case rr.rdata {
+                  dns.AData(ip) ->
+                    cache.set_with_ttl(
+                      records.ARecord(name: rr.name, ttl: rr.ttl, ip:),
+                      rr.ttl,
+                    )
+                  dns.AaaaData(ip) ->
+                    cache.set_with_ttl(
+                      records.AaaaRecord(name: rr.name, ttl: rr.ttl, ip:),
+                      rr.ttl,
+                    )
                   dns.CnameData(target) ->
-                    cache.set_cname(record.name, target, record.ttl)
-                  dns.RawData(_, _) -> Nil
+                    cache.set_with_ttl(
+                      records.CnameRecord(name: rr.name, ttl: rr.ttl, target:),
+                      rr.ttl,
+                    )
+                  dns.RawData(..) -> Nil
                 }
               })
+
               list.each(questions, log_resolved(
                 "↑",
                 peer_ip,
@@ -128,9 +139,10 @@ fn log_resolved(
     answers
     |> list.filter_map(fn(r) {
       case r.rdata {
-        dns.AData(a) -> Ok(ip.to_string(a) |> result.unwrap("?"))
-        dns.AaaaData(a) -> Ok(ip.to_string(a) |> result.unwrap("?"))
-        dns.CnameData(_) | dns.RawData(_, _) -> Error(Nil)
+        dns.AData(ip) -> Ok(ip.ipv4_to_string(ip))
+        dns.AaaaData(ip) -> Ok(ip.ipv6_to_string(ip))
+        dns.CnameData(target) -> Ok(target)
+        dns.RawData(_, _) -> Error(Nil)
       }
     })
     |> string.join(" ")
@@ -165,31 +177,19 @@ fn lookup_chain(
   qtype: dns.Type,
 ) -> Result(List(dns.ResourceRecord), Nil) {
   case cache.get(qname, qtype) {
-    Ok(cache.Record(ips:)) ->
-      Ok(
-        list.map(ips, fn(entry) {
-          let remaining = case entry.remaining {
-            -1 -> 300
-            remaining -> remaining
-          }
-          resource_record(qname, entry.ip, remaining)
-        }),
-      )
+    Ok(matched) -> Ok(list.map(matched, to_resource_record))
     Error(_) ->
-      case cache.get_cname(qname) {
+      case cache.get(qname, dns.Cname) {
         Ok(cnames) ->
-          list.try_fold(over: cnames, from: [], with: fn(acc, entry) {
-            let #(target, remaining) = entry
-            let cname_record =
-              dns.ResourceRecord(
-                name: qname,
-                class: dns.In,
-                ttl: remaining,
-                rdata: dns.CnameData(target),
-              )
-            case lookup_chain(target, qtype) {
-              Ok(tail) -> Ok(list.append(acc, [cname_record, ..tail]))
-              Error(_) -> Error(Nil)
+          list.try_fold(over: cnames, from: [], with: fn(acc, record) {
+            case record {
+              records.CnameRecord(target:, ..) ->
+                case lookup_chain(target, qtype) {
+                  Ok(tail) ->
+                    Ok(list.append(acc, [to_resource_record(record), ..tail]))
+                  Error(_) -> Error(Nil)
+                }
+              _ -> Error(Nil)
             }
           })
         Error(_) -> Error(Nil)
@@ -232,11 +232,22 @@ fn encode_response(query: dns.Query, answers: List(dns.ResourceRecord)) {
   |> dns.encode_response
 }
 
-fn resource_record(name: String, addr: ip.Address, ttl: Int) {
-  let rdata = case addr {
-    ip.IpV4(..) -> dns.AData(addr)
-    ip.IpV6(..) -> dns.AaaaData(addr)
+fn to_resource_record(record: records.Record) -> dns.ResourceRecord {
+  let ttl = case record.ttl {
+    -1 -> 300
+    t -> t
   }
-
-  dns.ResourceRecord(name:, class: dns.In, ttl:, rdata:)
+  case record {
+    records.ARecord(name:, ip:, ..) ->
+      dns.ResourceRecord(name:, class: dns.In, ttl:, rdata: dns.AData(ip))
+    records.AaaaRecord(name:, ip:, ..) ->
+      dns.ResourceRecord(name:, class: dns.In, ttl:, rdata: dns.AaaaData(ip))
+    records.CnameRecord(name:, target:, ..) ->
+      dns.ResourceRecord(
+        name:,
+        class: dns.In,
+        ttl:,
+        rdata: dns.CnameData(target),
+      )
+  }
 }

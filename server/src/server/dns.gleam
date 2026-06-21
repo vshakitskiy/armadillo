@@ -16,15 +16,14 @@ pub fn supervised(
     env.get_or(
       "DNS_UPSTREAM",
       parse: ip.from_string,
-      or: ip.IpV4(8, 8, 8, 8),
+      or: ip.V4(ip.Ipv4(8, 8, 8, 8)),
       log: "8.8.8.8",
     )
 
-  case ip.to_string(upstream) {
-    Ok(upstream) ->
-      logging.log(logging.Info, "Using " <> upstream <> " as a DNS upstream")
-    Error(Nil) -> Nil
-  }
+  logging.log(
+    logging.Info,
+    "Using " <> ip.to_string(upstream) <> " as a DNS upstream",
+  )
 
   let port = env.get_or("DNS_PORT", parse: int.parse, or: 53, log: "53")
 
@@ -35,10 +34,12 @@ pub fn supervised(
     |> udp.port(port)
     |> udp.bind("0.0.0.0")
     |> udp.on_start(fn(address, port) {
-      let assert Ok(address) = ip.to_string(address)
       logging.log(
         logging.Info,
-        "DNS listening on " <> address <> ":" <> int.to_string(port),
+        "DNS listening on "
+          <> ip.to_string(address)
+          <> ":"
+          <> int.to_string(port),
       )
     })
     |> udp.reuse_address

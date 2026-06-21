@@ -5,6 +5,6 @@ erl_crash.dump
 CLAUDE.md
 .overrides.env
 TODO.md
-/data/records.sqlite3
+/data/local.zone
 conf.json
 tun.json
