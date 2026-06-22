@@ -1,6 +1,7 @@
 import formal/form
 import gleam/dynamic/decode
 import gleam/http/response
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
@@ -26,12 +27,12 @@ pub fn main() {
 
 type Model {
   Model(
-    records: List(#(String, String)),
+    records: List(records.Record),
     loading: Bool,
     saving: Bool,
     error: option.Option(String),
     popup: Popup,
-    deleting: option.Option(String),
+    deleting: option.Option(#(String, records.RecordType)),
   )
 }
 
@@ -42,8 +43,8 @@ type Popup {
 }
 
 type PopupContent {
-  InsertContent(form.Form(records.Record))
-  UpdateContent(records.Record, form.Form(String))
+  InsertContent(type_: records.RecordType, form: form.Form(records.Record))
+  UpdateContent(record: records.Record, form: form.Form(records.Record))
 }
 
 fn init(_args: Nil) -> #(Model, effect.Effect(Message)) {
@@ -58,53 +59,139 @@ fn init(_args: Nil) -> #(Model, effect.Effect(Message)) {
   |> pair.new(fetch_records(ApiFetchReturned))
 }
 
-fn new_insert_form() -> form.Form(records.Record) {
+fn new_a_insert_form() -> form.Form(records.Record) {
   form.new({
-    use domain <- form.field(
-      "domain",
-      form.parse_string |> form.check_not_empty,
-    )
+    use name <- form.field("name", form.parse_string |> form.check_not_empty)
+    use value <- form.field("value", parse_ipv4())
+    use ttl <- form.field("ttl", parse_ttl())
 
-    use ip <- form.field("ip", parse_ip())
-
-    form.success(records.Record(domain:, ip:))
+    form.success(records.ARecord(name:, ttl:, ip: value))
   })
+  |> form.add_string("ttl", "300")
 }
 
-fn new_update_form(ip: String) -> form.Form(String) {
+fn new_aaaa_insert_form() -> form.Form(records.Record) {
   form.new({
-    use ip <- form.field("ip", parse_ip())
+    use name <- form.field("name", form.parse_string |> form.check_not_empty)
+    use value <- form.field("value", parse_ipv6())
+    use ttl <- form.field("ttl", parse_ttl())
 
-    form.success(ip)
+    form.success(records.AaaaRecord(name:, ttl:, ip: value))
   })
-  |> form.add_string("ip", ip)
+  |> form.add_string("ttl", "300")
 }
 
-fn parse_ip() {
-  form.parse(fn(values) {
-    case values {
-      ["", ..] -> Error(#("", "must not be blank"))
-      [ip, ..] ->
-        case ip.from_string(ip) {
-          Ok(..) -> Ok(ip)
-          Error(..) -> Error(#("", "must be valid ip"))
-        }
-      _ -> Error(#("", "must not be blank"))
-    }
+fn new_cname_insert_form() -> form.Form(records.Record) {
+  form.new({
+    use name <- form.field("name", form.parse_string |> form.check_not_empty)
+    use value <- form.field("value", form.parse_string |> form.check_not_empty)
+    use ttl <- form.field("ttl", parse_ttl())
+
+    form.success(records.CnameRecord(name:, ttl:, target: value))
   })
+  |> form.add_string("ttl", "300")
+}
+
+fn new_insert_form_for(type_: records.RecordType) -> form.Form(records.Record) {
+  case type_ {
+    records.A -> new_a_insert_form()
+    records.Aaaa -> new_aaaa_insert_form()
+    records.Cname -> new_cname_insert_form()
+  }
+}
+
+fn new_update_form(record: records.Record) -> form.Form(records.Record) {
+  case record {
+    records.ARecord(name:, ttl:, ip: addr) ->
+      form.new({
+        use value <- form.field("value", parse_ipv4())
+        use new_ttl <- form.field("ttl", parse_ttl())
+
+        form.success(records.ARecord(name:, ttl: new_ttl, ip: value))
+      })
+      |> form.add_string("value", ip.ipv4_to_string(addr))
+      |> form.add_string("ttl", int.to_string(ttl))
+
+    records.AaaaRecord(name:, ttl:, ip: addr) ->
+      form.new({
+        use value <- form.field("value", parse_ipv6())
+        use new_ttl <- form.field("ttl", parse_ttl())
+
+        form.success(records.AaaaRecord(name:, ttl: new_ttl, ip: value))
+      })
+      |> form.add_string("value", ip.ipv6_to_string(addr))
+      |> form.add_string("ttl", int.to_string(ttl))
+
+    records.CnameRecord(name:, ttl:, target:) ->
+      form.new({
+        use value <- form.field(
+          "value",
+          form.parse_string |> form.check_not_empty,
+        )
+        use new_ttl <- form.field("ttl", parse_ttl())
+
+        form.success(records.CnameRecord(name:, ttl: new_ttl, target: value))
+      })
+      |> form.add_string("value", target)
+      |> form.add_string("ttl", int.to_string(ttl))
+  }
+}
+
+fn parse_ipv4() {
+  let blank = ip.Ipv4(0, 0, 0, 0)
+
+  use values <- form.parse
+  case values {
+    ["", ..] -> Error(#(blank, "must not be blank"))
+    [value, ..] ->
+      case ip.ipv4_from_string(value) {
+        Ok(parsed) -> Ok(parsed)
+        Error(Nil) -> Error(#(blank, "must be a valid IPv4 address"))
+      }
+    _ -> Error(#(blank, "must not be blank"))
+  }
+}
+
+fn parse_ipv6() {
+  let blank = ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 0)
+
+  use values <- form.parse
+  case values {
+    ["", ..] -> Error(#(blank, "must not be blank"))
+    [value, ..] ->
+      case ip.ipv6_from_string(value) {
+        Ok(parsed) -> Ok(parsed)
+        Error(Nil) -> Error(#(blank, "must be a valid IPv6 address"))
+      }
+    _ -> Error(#(blank, "must not be blank"))
+  }
+}
+
+fn parse_ttl() {
+  use values <- form.parse
+  case values {
+    ["", ..] -> Error(#(0, "must not be blank"))
+    [value, ..] ->
+      case int.parse(value) {
+        Ok(number) if number > 0 -> Ok(number)
+        Ok(_) -> Error(#(0, "must be a positive number"))
+        Error(Nil) -> Error(#(0, "must be a number"))
+      }
+    _ -> Error(#(0, "must not be blank"))
+  }
 }
 
 fn fetch_records(
   on_response handle_response: fn(
-    Result(List(#(String, String)), rsvp.Error(String)),
+    Result(List(records.Record), rsvp.Error(String)),
   ) -> Message,
 ) -> effect.Effect(Message) {
-  decode.list(of: records.keyed_decoder())
+  decode.list(of: records.record_decoder())
   |> rsvp.expect_json(handle_response)
   |> rsvp.get("/api/records", _)
 }
 
-fn insert_records(
+fn insert_record(
   record: records.Record,
   on_response handle_response: fn(
     records.Record,
@@ -112,7 +199,7 @@ fn insert_records(
   ) -> Message,
 ) -> effect.Effect(Message) {
   rsvp.expect_ok_response(handle_response(record, _))
-  |> rsvp.post("/api/records", records.to_json(record), _)
+  |> rsvp.post("/api/records", records.record_to_json(record), _)
 }
 
 fn update_record(
@@ -123,27 +210,35 @@ fn update_record(
   ) -> Message,
 ) -> effect.Effect(Message) {
   rsvp.expect_ok_response(handle_response(record, _))
-  |> rsvp.patch("/api/records/" <> record.domain, json.string(record.ip), _)
+  |> rsvp.patch("/api/records", records.record_to_json(record), _)
 }
 
 fn delete_record(
-  domain: String,
+  name: String,
+  type_: records.RecordType,
   on_response handle_response: fn(
-    String,
+    #(String, records.RecordType),
     Result(response.Response(String), rsvp.Error(String)),
   ) -> Message,
 ) -> effect.Effect(Message) {
-  rsvp.expect_ok_response(handle_response(domain, _))
-  |> rsvp.delete("/api/records/" <> domain, json.null(), _)
+  let body =
+    json.object([
+      #("name", json.string(name)),
+      #("type", records.record_type_to_json(type_)),
+    ])
+
+  rsvp.expect_ok_response(handle_response(#(name, type_), _))
+  |> rsvp.delete("/api/records", body, _)
 }
 
 type Message {
-  ApiFetchReturned(Result(List(#(String, String)), rsvp.Error(String)))
+  ApiFetchReturned(Result(List(records.Record), rsvp.Error(String)))
 
   UserClosedPopup
   PopupAnimationEnded
 
   UserClickedInsert
+  UserChangedInsertType(records.RecordType)
   UserSubmittedInsertForm(Result(records.Record, form.Form(records.Record)))
   ApiInsertReturned(
     record: records.Record,
@@ -151,20 +246,17 @@ type Message {
   )
 
   UserClickedEdit(current_record: records.Record)
-  UserSubmittedUpdateForm(
-    domain: String,
-    form: Result(String, form.Form(String)),
-  )
+  UserSubmittedUpdateForm(Result(records.Record, form.Form(records.Record)))
   ApiUpdateReturned(
     updated_record: records.Record,
     result: Result(response.Response(String), rsvp.Error(String)),
   )
 
-  UserClickedDelete(domain: String)
-  UserConfirmedDelete(domain: String)
-  DeleteCancelled(domain: String)
+  UserClickedDelete(#(String, records.RecordType))
+  UserConfirmedDelete(#(String, records.RecordType))
+  DeleteCancelled(#(String, records.RecordType))
   ApiDeleteReturned(
-    domain: String,
+    key: #(String, records.RecordType),
     result: Result(response.Response(String), rsvp.Error(String)),
   )
 }
@@ -172,9 +264,14 @@ type Message {
 @external(javascript, "./timer_ffi.mjs", "set_timeout")
 fn set_timeout(callback: fn() -> Nil, ms: Int) -> Nil
 
-fn delete_cancel_after(domain: String, ms: Int) -> effect.Effect(Message) {
+fn delete_cancel_after(
+  key: #(String, records.RecordType),
+  ms: Int,
+) -> effect.Effect(Message) {
   use dispatch <- effect.from
-  set_timeout(fn() { dispatch(DeleteCancelled(domain)) }, ms)
+  use <- set_timeout(_, ms)
+
+  dispatch(DeleteCancelled(key))
 }
 
 fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
@@ -202,106 +299,134 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
     )
     _model, PopupAnimationEnded -> #(model, effect.none())
 
-    Model(popup: Hidden, ..), UserClickedInsert -> #(
-      Model(..model, popup: Visible(InsertContent(new_insert_form()))),
-      effect.none(),
-    )
+    Model(popup: Hidden, ..), UserClickedInsert -> {
+      let popup = Visible(InsertContent(records.A, new_a_insert_form()))
+      #(Model(..model, popup:), effect.none())
+    }
     _model, UserClickedInsert -> panic as "unreachable!"
+
+    Model(popup: Visible(InsertContent(_, old_form)), ..),
+      UserChangedInsertType(new_type)
+    -> {
+      let name = form.field_value(old_form, "name")
+      let ttl = form.field_value(old_form, "ttl")
+
+      let new_form =
+        new_insert_form_for(new_type)
+        |> form.add_string("name", name)
+        |> form.add_string("ttl", ttl)
+
+      let popup = Visible(InsertContent(new_type, new_form))
+      #(Model(..model, popup:), effect.none())
+    }
+    _model, UserChangedInsertType(_) -> panic as "unreachable!"
 
     Model(popup: Visible(InsertContent(..)), ..),
       UserSubmittedInsertForm(Ok(record))
-    -> #(
-      Model(..model, saving: True),
-      insert_records(record, ApiInsertReturned),
-    )
-    Model(popup: Visible(InsertContent(..)), ..),
+    -> #(Model(..model, saving: True), insert_record(record, ApiInsertReturned))
+    Model(popup: Visible(InsertContent(type_, ..)), ..),
       UserSubmittedInsertForm(Error(form))
-    -> #(Model(..model, popup: Visible(InsertContent(form))), effect.none())
+    -> {
+      let popup = Visible(InsertContent(type_, form))
+      #(Model(..model, popup:), effect.none())
+    }
     _model, UserSubmittedInsertForm(_) -> panic as "unreachable!"
 
     Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(
-        record: records.Record(domain:, ip:),
-        result: Ok(_response),
-      )
+      ApiInsertReturned(record:, result: Ok(_))
     -> {
-      let records = list.key_set(model.records, domain, ip)
+      let records = list.append(model.records, [record])
       #(Model(..model, records:, saving: False, popup: Hidden), effect.none())
     }
     Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(_record, result: Error(_))
+      ApiInsertReturned(record: _, result: Error(_))
     -> {
       let error = option.Some("Something went wrong inserting record!")
       #(Model(..model, saving: False, error:), effect.none())
     }
     Model(..), ApiInsertReturned(..) -> panic as "unreachable!"
 
-    Model(popup: Hidden, ..), UserClickedEdit(current_record) -> {
+    Model(popup: Hidden, ..), UserClickedEdit(current_record:) -> {
       let popup =
-        Visible(UpdateContent(
-          current_record,
-          new_update_form(current_record.ip),
-        ))
+        Visible(UpdateContent(current_record, new_update_form(current_record)))
       #(Model(..model, popup:), effect.none())
     }
     _model, UserClickedEdit(..) -> panic as "unreachable!"
 
     Model(popup: Visible(UpdateContent(..)), ..),
-      UserSubmittedUpdateForm(domain, form: Ok(ip))
+      UserSubmittedUpdateForm(Ok(record))
+    -> #(Model(..model, saving: True), update_record(record, ApiUpdateReturned))
+    Model(popup: Visible(UpdateContent(original, ..)), ..),
+      UserSubmittedUpdateForm(Error(form))
     -> #(
-      Model(..model, saving: True),
-      update_record(records.Record(domain:, ip:), ApiUpdateReturned),
-    )
-    Model(popup: Visible(UpdateContent(record, ..)), ..),
-      UserSubmittedUpdateForm(form: Error(form), ..)
-    -> #(
-      Model(..model, popup: Visible(UpdateContent(record, form))),
+      Model(..model, popup: Visible(UpdateContent(original, form))),
       effect.none(),
     )
-    _model, UserSubmittedUpdateForm(..) -> panic as "unreachable!"
+    _model, UserSubmittedUpdateForm(_) -> panic as "unreachable!"
 
     Model(popup: Visible(UpdateContent(..)), ..),
-      ApiUpdateReturned(record, result: Ok(_response))
+      ApiUpdateReturned(updated_record:, result: Ok(_))
     -> {
-      let records = list.key_set(model.records, record.domain, record.ip)
+      let records =
+        list.map(model.records, fn(record) {
+          case record, updated_record {
+            records.ARecord(name: a, ..), records.ARecord(name: b, ..)
+            | records.AaaaRecord(name: a, ..), records.AaaaRecord(name: b, ..)
+            | records.CnameRecord(name: a, ..), records.CnameRecord(name: b, ..)
+              if a == b
+            -> updated_record
+            _, _ -> record
+          }
+        })
+
       #(Model(..model, records:, saving: False, popup: Hidden), effect.none())
     }
     Model(popup: Visible(UpdateContent(..)), ..),
-      ApiUpdateReturned(_record, result: Error(_))
+      ApiUpdateReturned(updated_record: _, result: Error(_))
     -> {
       let error = option.Some("Something went wrong updating record!")
       #(Model(..model, saving: False, error:), effect.none())
     }
     Model(..), ApiUpdateReturned(..) -> panic as "unreachable!"
 
-    model, UserClickedDelete(domain) -> #(
-      Model(..model, deleting: option.Some(domain)),
-      delete_cancel_after(domain, 3000),
+    model, UserClickedDelete(key) -> #(
+      Model(..model, deleting: option.Some(key)),
+      delete_cancel_after(key, 3000),
     )
 
-    model, DeleteCancelled(domain) ->
+    model, DeleteCancelled(key) ->
       case model.deleting {
-        option.Some(pending) if pending == domain -> #(
+        option.Some(pending) if pending == key -> #(
           Model(..model, deleting: option.None),
           effect.none(),
         )
         _ -> #(model, effect.none())
       }
 
-    model, UserConfirmedDelete(domain) -> #(
-      Model(..model, saving: True, deleting: option.None),
-      delete_record(domain, ApiDeleteReturned),
-    )
+    model, UserConfirmedDelete(key) -> {
+      let #(target, type_) = key
 
-    model, ApiDeleteReturned(domain:, result: Ok(_response)) -> {
-      let records = case list.key_pop(model.records, domain) {
-        Ok(#(_domain, records)) -> records
-        Error(Nil) -> model.records
-      }
+      Model(..model, saving: True, deleting: option.None)
+      |> pair.new(delete_record(target, type_, ApiDeleteReturned))
+    }
+
+    model, ApiDeleteReturned(key:, result: Ok(_)) -> {
+      let #(target, type_) = key
+
+      let records =
+        list.filter(model.records, fn(record) {
+          case record, type_ {
+            records.ARecord(name:, ..), records.A
+            | records.AaaaRecord(name:, ..), records.Aaaa
+            | records.CnameRecord(name:, ..), records.Cname
+            -> name != target
+            _, _ -> True
+          }
+        })
 
       #(Model(..model, records:, saving: False), effect.none())
     }
-    model, ApiDeleteReturned(_domain, result: Error(_)) -> {
+    model, ApiDeleteReturned(key: _, result: Error(_)) -> {
       let error = option.Some("Something went wrong deleting record!")
       #(Model(..model, saving: False, error:), effect.none())
     }
@@ -336,47 +461,7 @@ fn view(model: Model) -> Element(Message) {
             )
           option.None -> element.none()
         },
-        html.header(
-          [
-            attribute.class(
-              "flex items-center mb-3 xs:mb-6 sm:mb-10 md:mb-12 lg:mb-14",
-            ),
-          ],
-          [
-            html.div(
-              [
-                attribute.class(
-                  "bg-fg rounded-full size-6 xs:size-9 sm:size-12 md:size-14 lg:size-16 mr-2 flex items-center justify-center",
-                ),
-              ],
-              [
-                html.img([
-                  attribute.src("/armadillo.png"),
-                  attribute.class(
-                    "size-3 xs:size-5 sm:size-7 md:size-9 lg:size-10",
-                  ),
-                ]),
-              ],
-            ),
-            html.h1(
-              [
-                attribute.class(
-                  "text-xs xs:text-lg sm:text-2xl md:text-3xl lg:text-4xl font-semibold tracking-tight mr-2 xs:mr-3 sm:mr-5 lg:mr-6",
-                ),
-              ],
-              [html.text("DNS Records")],
-            ),
-            html.button(
-              [
-                event.on_click(UserClickedInsert),
-                attribute.class(
-                  "w-5 h-5 xs:w-7 xs:h-7 sm:w-10 sm:h-10 md:w-11 md:h-11 lg:w-12 lg:h-12 rounded-md bg-accent text-fg flex items-center justify-center hover:bg-accent/80 transition-colors cursor-pointer",
-                ),
-              ],
-              [view_add_icon()],
-            ),
-          ],
-        ),
+        view_header(),
         case model.loading {
           True ->
             html.p(
@@ -385,34 +470,20 @@ fn view(model: Model) -> Element(Message) {
                   "text-subtle text-xs xs:text-base sm:text-lg md:text-xl italic",
                 ),
               ],
-              [
-                html.text("Loading..."),
-              ],
+              [html.text("Loading...")],
             )
           False ->
             html.table([attribute.class("w-full border-collapse")], [
               html.thead([], [
                 html.tr([], [
+                  view_th("domain"),
+                  view_th("type"),
+                  view_th("value"),
+                  view_th("ttl"),
                   html.th(
                     [
                       attribute.class(
-                        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
-                      ),
-                    ],
-                    [html.text("domain")],
-                  ),
-                  html.th(
-                    [
-                      attribute.class(
-                        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
-                      ),
-                    ],
-                    [html.text("ip")],
-                  ),
-                  html.th(
-                    [
-                      attribute.class(
-                        "pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated",
+                        "w-fit pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated",
                       ),
                     ],
                     [],
@@ -432,6 +503,59 @@ fn view(model: Model) -> Element(Message) {
       ],
     ),
   ])
+}
+
+fn view_header() -> Element(Message) {
+  html.header(
+    [
+      attribute.class(
+        "flex items-center mb-3 xs:mb-6 sm:mb-10 md:mb-12 lg:mb-14",
+      ),
+    ],
+    [
+      html.div(
+        [
+          attribute.class(
+            "bg-fg rounded-full size-6 xs:size-9 sm:size-12 md:size-14 lg:size-16 mr-2 flex items-center justify-center",
+          ),
+        ],
+        [
+          html.img([
+            attribute.src("/armadillo.png"),
+            attribute.class("size-3 xs:size-5 sm:size-7 md:size-9 lg:size-10"),
+          ]),
+        ],
+      ),
+      html.h1(
+        [
+          attribute.class(
+            "text-xs xs:text-lg sm:text-2xl md:text-3xl lg:text-4xl font-semibold tracking-tight mr-2 xs:mr-3 sm:mr-5 lg:mr-6",
+          ),
+        ],
+        [html.text("DNS Records")],
+      ),
+      html.button(
+        [
+          event.on_click(UserClickedInsert),
+          attribute.class(
+            "w-5 h-5 xs:w-7 xs:h-7 sm:w-10 sm:h-10 md:w-11 md:h-11 lg:w-12 lg:h-12 rounded-md bg-accent text-fg flex items-center justify-center hover:bg-accent/80 transition-colors cursor-pointer",
+          ),
+        ],
+        [view_add_icon()],
+      ),
+    ],
+  )
+}
+
+fn view_th(label: String) -> Element(Message) {
+  html.th(
+    [
+      attribute.class(
+        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
+      ),
+    ],
+    [html.text(label)],
+  )
 }
 
 fn view_popup(
@@ -473,7 +597,7 @@ fn view_popup(
         ],
         [
           case content {
-            InsertContent(form) -> view_insert(form, saving)
+            InsertContent(type_, form) -> view_insert(type_, form, saving)
             UpdateContent(record, form) -> view_update(record, form, saving)
           },
         ],
@@ -483,11 +607,18 @@ fn view_popup(
 }
 
 fn view_insert(
+  type_: records.RecordType,
   form: form.Form(records.Record),
   saving: Bool,
 ) -> element.Element(Message) {
   let handle_submit = fn(values) {
     form.add_values(form, values) |> form.run |> UserSubmittedInsertForm
+  }
+
+  let value_label = case type_ {
+    records.A -> "IPv4 Address"
+    records.Aaaa -> "IPv6 Address"
+    records.Cname -> "Target"
   }
 
   html.form([event.on_submit(handle_submit), attribute.class("flex flex-col")], [
@@ -497,12 +628,16 @@ fn view_insert(
           "text-xs xs:text-base sm:text-xl md:text-2xl font-semibold mb-2 xs:mb-4 sm:mb-6 md:mb-8",
         ),
       ],
-      [
-        html.text("Add Record"),
-      ],
+      [html.text("Add Record")],
     ),
-    view_input(form, is: "text", name: "domain", label: "Domain"),
-    view_input(form, is: "text", name: "ip", label: "IP"),
+    html.div([attribute.class("flex gap-2 mb-4")], [
+      view_type_button("A", records.A, type_ == records.A),
+      view_type_button("AAAA", records.Aaaa, type_ == records.Aaaa),
+      view_type_button("CNAME", records.Cname, type_ == records.Cname),
+    ]),
+    view_input(form, is: "text", name: "name", label: "Domain"),
+    view_input(form, is: "text", name: "value", label: value_label),
+    view_input(form, is: "number", name: "ttl", label: "TTL (seconds)"),
     html.button(
       [
         attribute.disabled(saving),
@@ -520,15 +655,40 @@ fn view_insert(
   ])
 }
 
+fn view_type_button(
+  label: String,
+  type_: records.RecordType,
+  active: Bool,
+) -> Element(Message) {
+  html.button(
+    [
+      attribute.type_("button"),
+      event.on_click(UserChangedInsertType(type_)),
+      attribute.class(
+        "px-2 py-1 xs:px-3 xs:py-1.5 sm:px-4 sm:py-2 rounded text-2xs xs:text-xs sm:text-sm font-medium transition-colors cursor-pointer "
+        <> case active {
+          True -> "bg-accent text-fg"
+          False -> "bg-elevated text-subtle hover:text-fg"
+        },
+      ),
+    ],
+    [html.text(label)],
+  )
+}
+
 fn view_update(
   record: records.Record,
-  form: form.Form(String),
+  form: form.Form(records.Record),
   saving: Bool,
 ) -> Element(Message) {
   let handle_submit = fn(values) {
-    form.add_values(form, values)
-    |> form.run
-    |> UserSubmittedUpdateForm(record.domain, _)
+    form.add_values(form, values) |> form.run |> UserSubmittedUpdateForm
+  }
+
+  let value_label = case record {
+    records.ARecord(..) -> "IPv4 Address"
+    records.AaaaRecord(..) -> "IPv6 Address"
+    records.CnameRecord(..) -> "Target"
   }
 
   html.form([event.on_submit(handle_submit), attribute.class("flex flex-col")], [
@@ -536,9 +696,10 @@ fn view_update(
       html.text("Edit Record"),
     ]),
     html.p([attribute.class("text-xs text-subtle mb-4 italic")], [
-      html.text(record.domain),
+      html.text(record.name),
     ]),
-    view_input(form, is: "text", name: "ip", label: "IP"),
+    view_input(form, is: "text", name: "value", label: value_label),
+    view_input(form, is: "number", name: "ttl", label: "TTL (seconds)"),
     html.button(
       [
         attribute.disabled(saving),
@@ -557,12 +718,12 @@ fn view_update(
 }
 
 fn view_input(
-  form: form.Form(data),
+  frm: form.Form(data),
   is type_: String,
   name name: String,
   label label: String,
 ) -> Element(Message) {
-  let errors = form.field_error_messages(form, name)
+  let errors = form.field_error_messages(frm, name)
 
   html.div([attribute.class("flex flex-col gap-1 mb-4")], [
     html.label(
@@ -578,7 +739,7 @@ fn view_input(
       attribute.type_(type_),
       attribute.id(name),
       attribute.name(name),
-      attribute.default_value(form.field_value(form, name)),
+      attribute.default_value(form.field_value(frm, name)),
       attribute.class(
         "bg-elevated border border-elevated rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 md:px-6 md:py-4 text-fg text-xs xs:text-sm sm:text-base md:text-lg outline-none focus:border-accent",
       ),
@@ -612,15 +773,37 @@ fn view_add_icon() -> Element(msg) {
   )
 }
 
+fn record_type(record: records.Record) -> records.RecordType {
+  case record {
+    records.ARecord(..) -> records.A
+    records.AaaaRecord(..) -> records.Aaaa
+    records.CnameRecord(..) -> records.Cname
+  }
+}
+
 fn view_record(
-  deleting: option.Option(String),
+  deleting: option.Option(#(String, records.RecordType)),
   global_busy: Bool,
-  record: #(String, String),
+  record: records.Record,
 ) -> #(String, Element(Message)) {
-  let #(domain, ip) = record
+  let type_label = case record {
+    records.ARecord(..) -> "A"
+    records.AaaaRecord(..) -> "AAAA"
+    records.CnameRecord(..) -> "CNAME"
+  }
+
+  let value = case record {
+    records.ARecord(ip:, ..) -> ip.ipv4_to_string(ip)
+    records.AaaaRecord(ip:, ..) -> ip.ipv6_to_string(ip)
+    records.CnameRecord(target:, ..) -> target
+  }
+
+  let ttl_label = int.to_string(record.ttl) <> "s"
+  let key = record.name <> "/" <> type_label
+  let this_key = #(record.name, record_type(record))
 
   let dimmed = case deleting {
-    option.Some(d) if d == domain -> False
+    option.Some(pending) if pending == this_key -> False
     option.Some(_) -> True
     option.None -> global_busy
   }
@@ -633,10 +816,10 @@ fn view_record(
     }
 
   let delete_button = case deleting {
-    option.Some(pending) if pending == domain ->
+    option.Some(pending) if pending == this_key ->
       html.button(
         [
-          event.on_click(UserConfirmedDelete(domain)),
+          event.on_click(UserConfirmedDelete(this_key)),
           attribute.class(
             "text-red-400 hover:text-red-300 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer italic",
           ),
@@ -646,7 +829,7 @@ fn view_record(
     _ ->
       html.button(
         [
-          event.on_click(UserClickedDelete(domain)),
+          event.on_click(UserClickedDelete(this_key)),
           attribute.class(
             "text-subtle hover:text-red-400 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer",
           ),
@@ -662,9 +845,15 @@ fn view_record(
           "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-fg",
         ),
       ],
+      [html.text(record.name)],
+    ),
+    html.td(
       [
-        html.text(domain),
+        attribute.class(
+          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-subtle font-mono",
+        ),
       ],
+      [html.text(type_label)],
     ),
     html.td(
       [
@@ -672,18 +861,24 @@ fn view_record(
           "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-muted",
         ),
       ],
+      [html.text(value)],
+    ),
+    html.td(
       [
-        html.text(ip),
+        attribute.class(
+          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-subtle",
+        ),
       ],
+      [html.text(ttl_label)],
     ),
     html.td([attribute.class("py-1 xs:py-3 sm:py-4 md:py-5 text-right")], [
       html.button(
         [
-          event.on_click(UserClickedEdit(records.Record(domain:, ip:))),
+          event.on_click(UserClickedEdit(record)),
           attribute.class(
             "text-subtle hover:text-fg text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer "
             <> case deleting {
-              option.Some(pending) if pending == domain ->
+              option.Some(pending) if pending == this_key ->
                 "mr-[10px] xs:mr-[20.5px] sm:mr-[25.5px] md:mr-[31px]"
               _ -> "mr-1 xs:mr-3 sm:mr-4 md:mr-5"
             },
@@ -694,5 +889,5 @@ fn view_record(
       delete_button,
     ]),
   ])
-  |> pair.new(domain, _)
+  |> pair.new(key, _)
 }
