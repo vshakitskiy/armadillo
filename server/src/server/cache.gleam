@@ -63,5 +63,8 @@ pub fn get(
 @external(erlang, "cache_ffi", "delete")
 pub fn delete(name: String, type_: dns.Type) -> Nil
 
+@external(erlang, "cache_ffi", "delete_domain")
+pub fn delete_domain(name: String) -> Nil
+
 @external(erlang, "cache_ffi", "cleanup_expired")
 fn cleanup_expired() -> Nil

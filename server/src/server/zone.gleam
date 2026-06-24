@@ -28,6 +28,17 @@ pub type Message {
     name: String,
     type_: dns.Type,
   )
+  InsertDomain(
+    reply_to: process.Subject(Result(Nil, ZoneError)),
+    name: String,
+    entries: List(records.RecordEntry),
+  )
+  PutDomain(
+    reply_to: process.Subject(Result(Nil, ZoneError)),
+    name: String,
+    entries: List(records.RecordEntry),
+  )
+  DeleteDomain(reply_to: process.Subject(Result(Nil, ZoneError)), name: String)
 }
 
 pub type ZoneError {
@@ -76,6 +87,29 @@ pub fn delete_record(
   type_: dns.Type,
 ) -> Result(Nil, ZoneError) {
   process.call(subject, waiting: 10_000, sending: DeleteRecord(_, name, type_))
+}
+
+pub fn insert_domain(
+  subject: process.Subject(Message),
+  name: String,
+  entries: List(records.RecordEntry),
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: InsertDomain(_, name, entries))
+}
+
+pub fn put_domain(
+  subject: process.Subject(Message),
+  name: String,
+  entries: List(records.RecordEntry),
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: PutDomain(_, name, entries))
+}
+
+pub fn delete_domain(
+  subject: process.Subject(Message),
+  name: String,
+) -> Result(Nil, ZoneError) {
+  process.call(subject, waiting: 10_000, sending: DeleteDomain(_, name))
 }
 
 fn handle_message(zone: Zone, message: Message) {
@@ -158,6 +192,67 @@ fn handle_message(zone: Zone, message: Message) {
         })
 
       let zone = Zone(..zone, serial: next_serial(zone.serial), records:)
+      handle_write(zone, reply_to)
+    }
+
+    InsertDomain(reply_to:, name:, entries:) -> {
+      let exists = list.any(zone.records, fn(r) { r.name == name })
+      case exists {
+        True -> {
+          process.send(reply_to, Error(Conflict))
+          actor.continue(zone)
+        }
+        False -> apply_domain_put(zone, reply_to, name, entries)
+      }
+    }
+
+    PutDomain(reply_to:, name:, entries:) -> {
+      apply_domain_put(zone, reply_to, name, entries)
+    }
+
+    DeleteDomain(reply_to:, name:) -> {
+      let records = list.filter(zone.records, fn(r) { r.name != name })
+      let zone = Zone(..zone, serial: next_serial(zone.serial), records:)
+      handle_write(zone, reply_to)
+    }
+  }
+}
+
+fn apply_domain_put(
+  zone: Zone,
+  reply_to: process.Subject(Result(Nil, ZoneError)),
+  name: String,
+  entries: List(records.RecordEntry),
+) {
+  let has_cname =
+    list.any(entries, fn(e) {
+      case e {
+        records.CnameEntry(..) -> True
+        _ -> False
+      }
+    })
+  let has_address =
+    list.any(entries, fn(e) {
+      case e {
+        records.AEntry(..) | records.AaaaEntry(..) -> True
+        _ -> False
+      }
+    })
+
+  case has_cname && has_address {
+    True -> {
+      process.send(reply_to, Error(Conflict))
+      actor.continue(zone)
+    }
+    False -> {
+      let new_records = list.map(entries, records.entry_to_record(name, _))
+      let rest = list.filter(zone.records, fn(r) { r.name != name })
+      let zone =
+        Zone(
+          ..zone,
+          serial: next_serial(zone.serial),
+          records: list.append(rest, new_records),
+        )
       handle_write(zone, reply_to)
     }
   }

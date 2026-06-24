@@ -1,17 +1,18 @@
-import formal/form
 import gleam/dynamic/decode
+import gleam/function
 import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option
 import gleam/pair
+import gleam/result
+import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect
 import lustre/element.{type Element}
 import lustre/element/html
-import lustre/element/keyed
 import lustre/element/svg
 import lustre/event
 import rsvp
@@ -21,18 +22,39 @@ import shared/records
 pub fn main() {
   let app = lustre.application(init, update, view)
   let assert Ok(_) = lustre.start(app, "#app", Nil)
-
   Nil
+}
+
+type EntryDraft {
+  EntryDraft(
+    type_: records.RecordType,
+    value: String,
+    ttl: String,
+    value_error: option.Option(String),
+    ttl_error: option.Option(String),
+  )
+}
+
+fn default_entries() -> List(EntryDraft) {
+  [
+    EntryDraft(
+      type_: records.A,
+      value: "",
+      ttl: "300",
+      value_error: option.None,
+      ttl_error: option.None,
+    ),
+  ]
 }
 
 type Model {
   Model(
-    records: List(records.Record),
+    domains: List(records.DomainGroup),
     loading: Bool,
     saving: Bool,
     error: option.Option(String),
     popup: Popup,
-    deleting: option.Option(#(String, records.RecordType)),
+    deleting: option.Option(String),
   )
 }
 
@@ -43,220 +65,106 @@ type Popup {
 }
 
 type PopupContent {
-  InsertContent(type_: records.RecordType, form: form.Form(records.Record))
-  UpdateContent(record: records.Record, form: form.Form(records.Record))
+  InsertContent(
+    domain: String,
+    domain_error: option.Option(String),
+    entries: List(EntryDraft),
+  )
+  EditContent(domain: String, entries: List(EntryDraft))
 }
 
 fn init(_args: Nil) -> #(Model, effect.Effect(Message)) {
   Model(
-    records: [],
+    domains: [],
     loading: True,
     saving: False,
     error: option.None,
     popup: Hidden,
     deleting: option.None,
   )
-  |> pair.new(fetch_records(ApiFetchReturned))
+  |> pair.new(api_fetch_domains(ApiFetchReturned))
 }
 
-fn new_a_insert_form() -> form.Form(records.Record) {
-  form.new({
-    use name <- form.field("name", form.parse_string |> form.check_not_empty)
-    use value <- form.field("value", parse_ipv4())
-    use ttl <- form.field("ttl", parse_ttl())
-
-    form.success(records.ARecord(name:, ttl:, ip: value))
-  })
-  |> form.add_string("ttl", "300")
-}
-
-fn new_aaaa_insert_form() -> form.Form(records.Record) {
-  form.new({
-    use name <- form.field("name", form.parse_string |> form.check_not_empty)
-    use value <- form.field("value", parse_ipv6())
-    use ttl <- form.field("ttl", parse_ttl())
-
-    form.success(records.AaaaRecord(name:, ttl:, ip: value))
-  })
-  |> form.add_string("ttl", "300")
-}
-
-fn new_cname_insert_form() -> form.Form(records.Record) {
-  form.new({
-    use name <- form.field("name", form.parse_string |> form.check_not_empty)
-    use value <- form.field("value", form.parse_string |> form.check_not_empty)
-    use ttl <- form.field("ttl", parse_ttl())
-
-    form.success(records.CnameRecord(name:, ttl:, target: value))
-  })
-  |> form.add_string("ttl", "300")
-}
-
-fn new_insert_form_for(type_: records.RecordType) -> form.Form(records.Record) {
-  case type_ {
-    records.A -> new_a_insert_form()
-    records.Aaaa -> new_aaaa_insert_form()
-    records.Cname -> new_cname_insert_form()
-  }
-}
-
-fn new_update_form(record: records.Record) -> form.Form(records.Record) {
-  case record {
-    records.ARecord(name:, ttl:, ip: addr) ->
-      form.new({
-        use value <- form.field("value", parse_ipv4())
-        use new_ttl <- form.field("ttl", parse_ttl())
-
-        form.success(records.ARecord(name:, ttl: new_ttl, ip: value))
-      })
-      |> form.add_string("value", ip.ipv4_to_string(addr))
-      |> form.add_string("ttl", int.to_string(ttl))
-
-    records.AaaaRecord(name:, ttl:, ip: addr) ->
-      form.new({
-        use value <- form.field("value", parse_ipv6())
-        use new_ttl <- form.field("ttl", parse_ttl())
-
-        form.success(records.AaaaRecord(name:, ttl: new_ttl, ip: value))
-      })
-      |> form.add_string("value", ip.ipv6_to_string(addr))
-      |> form.add_string("ttl", int.to_string(ttl))
-
-    records.CnameRecord(name:, ttl:, target:) ->
-      form.new({
-        use value <- form.field(
-          "value",
-          form.parse_string |> form.check_not_empty,
-        )
-        use new_ttl <- form.field("ttl", parse_ttl())
-
-        form.success(records.CnameRecord(name:, ttl: new_ttl, target: value))
-      })
-      |> form.add_string("value", target)
-      |> form.add_string("ttl", int.to_string(ttl))
-  }
-}
-
-fn parse_ipv4() {
-  let blank = ip.Ipv4(0, 0, 0, 0)
-
-  use values <- form.parse
-  case values {
-    ["", ..] -> Error(#(blank, "must not be blank"))
-    [value, ..] ->
-      case ip.ipv4_from_string(value) {
-        Ok(parsed) -> Ok(parsed)
-        Error(Nil) -> Error(#(blank, "must be a valid IPv4 address"))
-      }
-    _ -> Error(#(blank, "must not be blank"))
-  }
-}
-
-fn parse_ipv6() {
-  let blank = ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 0)
-
-  use values <- form.parse
-  case values {
-    ["", ..] -> Error(#(blank, "must not be blank"))
-    [value, ..] ->
-      case ip.ipv6_from_string(value) {
-        Ok(parsed) -> Ok(parsed)
-        Error(Nil) -> Error(#(blank, "must be a valid IPv6 address"))
-      }
-    _ -> Error(#(blank, "must not be blank"))
-  }
-}
-
-fn parse_ttl() {
-  use values <- form.parse
-  case values {
-    ["", ..] -> Error(#(0, "must not be blank"))
-    [value, ..] ->
-      case int.parse(value) {
-        Ok(number) if number > 0 -> Ok(number)
-        Ok(_) -> Error(#(0, "must be a positive number"))
-        Error(Nil) -> Error(#(0, "must be a number"))
-      }
-    _ -> Error(#(0, "must not be blank"))
-  }
-}
-
-fn fetch_records(
-  on_response handle_response: fn(
-    Result(List(records.Record), rsvp.Error(String)),
-  ) -> Message,
+fn api_fetch_domains(
+  on_response: fn(Result(List(records.DomainGroup), rsvp.Error(String))) ->
+    Message,
 ) -> effect.Effect(Message) {
-  decode.list(of: records.record_decoder())
-  |> rsvp.expect_json(handle_response)
-  |> rsvp.get("/api/records", _)
+  decode.list(of: records.domain_group_decoder())
+  |> rsvp.expect_json(on_response)
+  |> rsvp.get("/api/domains", _)
 }
 
-fn insert_record(
-  record: records.Record,
-  on_response handle_response: fn(
-    records.Record,
+fn api_insert_domain(
+  group: records.DomainGroup,
+  on_response: fn(
+    records.DomainGroup,
     Result(response.Response(String), rsvp.Error(String)),
   ) -> Message,
 ) -> effect.Effect(Message) {
-  rsvp.expect_ok_response(handle_response(record, _))
-  |> rsvp.post("/api/records", records.record_to_json(record), _)
+  rsvp.expect_ok_response(on_response(group, _))
+  |> rsvp.post("/api/domains", records.domain_group_to_json(group), _)
 }
 
-fn update_record(
-  record: records.Record,
-  on_response handle_response: fn(
-    records.Record,
-    Result(response.Response(String), rsvp.Error(String)),
-  ) -> Message,
-) -> effect.Effect(Message) {
-  rsvp.expect_ok_response(handle_response(record, _))
-  |> rsvp.patch("/api/records", records.record_to_json(record), _)
-}
-
-fn delete_record(
+fn api_put_domain(
   name: String,
-  type_: records.RecordType,
-  on_response handle_response: fn(
-    #(String, records.RecordType),
+  entries: List(records.RecordEntry),
+  on_response: fn(
+    String,
+    List(records.RecordEntry),
     Result(response.Response(String), rsvp.Error(String)),
   ) -> Message,
 ) -> effect.Effect(Message) {
-  let body =
-    json.object([
-      #("name", json.string(name)),
-      #("type", records.record_type_to_json(type_)),
-    ])
+  rsvp.expect_ok_response(on_response(name, entries, _))
+  |> rsvp.put(
+    "/api/domains/" <> name,
+    json.array(entries, records.record_entry_to_json),
+    _,
+  )
+}
 
-  rsvp.expect_ok_response(handle_response(#(name, type_), _))
-  |> rsvp.delete("/api/records", body, _)
+fn api_delete_domain(
+  name: String,
+  on_response: fn(String, Result(response.Response(String), rsvp.Error(String))) ->
+    Message,
+) -> effect.Effect(Message) {
+  rsvp.expect_ok_response(on_response(name, _))
+  |> rsvp.delete("/api/domains/" <> name, json.object([]), _)
 }
 
 type Message {
-  ApiFetchReturned(Result(List(records.Record), rsvp.Error(String)))
+  ApiFetchReturned(Result(List(records.DomainGroup), rsvp.Error(String)))
 
   UserClosedPopup
   PopupAnimationEnded
 
   UserClickedInsert
-  UserChangedInsertType(records.RecordType)
-  UserSubmittedInsertForm(Result(records.Record, form.Form(records.Record)))
+  UserChangedInsertDomain(String)
+  UserSubmittedInsert
   ApiInsertReturned(
-    record: records.Record,
+    group: records.DomainGroup,
     result: Result(response.Response(String), rsvp.Error(String)),
   )
 
-  UserClickedEdit(current_record: records.Record)
-  UserSubmittedUpdateForm(Result(records.Record, form.Form(records.Record)))
-  ApiUpdateReturned(
-    updated_record: records.Record,
+  UserClickedEdit(String)
+  UserSubmittedEdit
+  ApiPutReturned(
+    domain: String,
+    entries: List(records.RecordEntry),
     result: Result(response.Response(String), rsvp.Error(String)),
   )
 
-  UserClickedDelete(#(String, records.RecordType))
-  UserConfirmedDelete(#(String, records.RecordType))
-  DeleteCancelled(#(String, records.RecordType))
+  UserChangedEntryType(Int, records.RecordType)
+  UserChangedEntryValue(Int, String)
+  UserChangedEntryTtl(Int, String)
+  UserAddedEntry
+  UserRemovedEntry(Int)
+
+  UserClickedDelete(String)
+  UserClickedDeleteDomainFromEdit(String)
+  UserConfirmedDelete(String)
+  DeleteCancelled(String)
   ApiDeleteReturned(
-    key: #(String, records.RecordType),
+    domain: String,
     result: Result(response.Response(String), rsvp.Error(String)),
   )
 }
@@ -264,20 +172,116 @@ type Message {
 @external(javascript, "./timer_ffi.mjs", "set_timeout")
 fn set_timeout(callback: fn() -> Nil, ms: Int) -> Nil
 
-fn delete_cancel_after(
-  key: #(String, records.RecordType),
-  ms: Int,
-) -> effect.Effect(Message) {
+fn delete_cancel_after(domain: String, ms: Int) -> effect.Effect(Message) {
   use dispatch <- effect.from
   use <- set_timeout(_, ms)
+  dispatch(DeleteCancelled(domain))
+}
 
-  dispatch(DeleteCancelled(key))
+fn update_entry_at(
+  entries: List(EntryDraft),
+  index: Int,
+  callback: fn(EntryDraft) -> EntryDraft,
+) -> List(EntryDraft) {
+  use entry, i <- list.index_map(entries)
+  case i == index {
+    True -> callback(entry)
+    False -> entry
+  }
+}
+
+fn validate_entry(
+  draft: EntryDraft,
+) -> Result(records.RecordEntry, EntryDraft) {
+  let value_result = case draft.type_ {
+    records.A ->
+      case ip.ipv4_from_string(draft.value) {
+        Ok(ip) -> Ok(records.AEntry(ttl: 0, ip:))
+        Error(Nil) -> Error("must be a valid IPv4 address")
+      }
+    records.Aaaa ->
+      case ip.ipv6_from_string(draft.value) {
+        Ok(ip) -> Ok(records.AaaaEntry(ttl: 0, ip:))
+        Error(Nil) -> Error("must be a valid IPv6 address")
+      }
+    records.Cname ->
+      case string.is_empty(string.trim(draft.value)) {
+        True -> Error("must not be blank")
+        False -> Ok(records.CnameEntry(ttl: 0, target: draft.value))
+      }
+  }
+
+  let ttl_result = case int.parse(draft.ttl) {
+    Ok(n) if n > 0 && n <= 86_400 -> Ok(n)
+    Ok(n) if n > 86_400 -> Error("must be ≤ 86400 (1 day)")
+    Ok(_) -> Error("must be a positive number")
+    Error(Nil) -> Error("must be a number")
+  }
+
+  case value_result, ttl_result {
+    Ok(records.AEntry(ip:, ..)), Ok(ttl) -> Ok(records.AEntry(ttl:, ip:))
+    Ok(records.AaaaEntry(ip:, ..)), Ok(ttl) -> Ok(records.AaaaEntry(ttl:, ip:))
+    Ok(records.CnameEntry(target:, ..)), Ok(ttl) ->
+      Ok(records.CnameEntry(ttl:, target:))
+    _, _ ->
+      Error(
+        EntryDraft(
+          ..draft,
+          value_error: case value_result {
+            Error(msg) -> option.Some(msg)
+            Ok(_) -> option.None
+          },
+          ttl_error: case ttl_result {
+            Error(msg) -> option.Some(msg)
+            Ok(_) -> option.None
+          },
+        ),
+      )
+  }
+}
+
+fn validate_entries(
+  drafts: List(EntryDraft),
+) -> Result(List(records.RecordEntry), List(EntryDraft)) {
+  let results = list.map(drafts, validate_entry)
+  let any_error = list.any(results, result.is_error)
+
+  case any_error {
+    False -> Ok(list.filter_map(results, function.identity))
+    True ->
+      Error(
+        list.zip(drafts, results)
+        |> list.map(fn(pair) {
+          let #(draft, result) = pair
+          case result {
+            Ok(_) -> draft
+            Error(with_errors) -> with_errors
+          }
+        }),
+      )
+  }
+}
+
+fn entry_to_draft(entry: records.RecordEntry) -> EntryDraft {
+  let #(type_, value) = case entry {
+    records.AEntry(ip:, ..) -> #(records.A, ip.ipv4_to_string(ip))
+    records.AaaaEntry(ip:, ..) -> #(records.Aaaa, ip.ipv6_to_string(ip))
+    records.CnameEntry(target:, ..) -> #(records.Cname, target)
+  }
+
+  EntryDraft(
+    type_:,
+    value:,
+    ttl: int.to_string(entry.ttl),
+    value_error: option.None,
+    ttl_error: option.None,
+  )
 }
 
 fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
   case model, message {
-    model, ApiFetchReturned(Ok(records)) -> #(
-      Model(..model, records:, loading: False),
+    model, ApiFetchReturned(Ok(domains)) -> #(
+      Model(..model, domains:, loading: False),
       effect.none(),
     )
     model, ApiFetchReturned(Error(_)) -> {
@@ -297,137 +301,243 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       Model(..model, popup: Hidden),
       effect.none(),
     )
-    _model, PopupAnimationEnded -> #(model, effect.none())
+    _, PopupAnimationEnded -> #(model, effect.none())
 
     Model(popup: Hidden, ..), UserClickedInsert -> {
-      let popup = Visible(InsertContent(records.A, new_a_insert_form()))
+      let content =
+        InsertContent(
+          domain: "",
+          domain_error: option.None,
+          entries: default_entries(),
+        )
+      #(Model(..model, popup: Visible(content)), effect.none())
+    }
+    _, UserClickedInsert -> panic as "unreachable!"
+
+    Model(popup: Visible(InsertContent(entries:, ..)), ..),
+      UserChangedInsertDomain(domain)
+    -> {
+      let content = InsertContent(domain:, domain_error: option.None, entries:)
+      #(Model(..model, popup: Visible(content)), effect.none())
+    }
+    _, UserChangedInsertDomain(_) -> panic as "unreachable!"
+
+    model, UserChangedEntryType(index, type_) -> {
+      let popup = case model.popup {
+        Visible(InsertContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, type_:, value_error: option.None)
+          }
+          Visible(InsertContent(..content, entries:))
+        }
+        Visible(EditContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, type_:, value_error: option.None)
+          }
+          Visible(EditContent(..content, entries:))
+        }
+        _ -> panic as "unreachable!"
+      }
       #(Model(..model, popup:), effect.none())
     }
-    _model, UserClickedInsert -> panic as "unreachable!"
 
-    Model(popup: Visible(InsertContent(_, old_form)), ..),
-      UserChangedInsertType(new_type)
-    -> {
-      let name = form.field_value(old_form, "name")
-      let ttl = form.field_value(old_form, "ttl")
-
-      let new_form =
-        new_insert_form_for(new_type)
-        |> form.add_string("name", name)
-        |> form.add_string("ttl", ttl)
-
-      let popup = Visible(InsertContent(new_type, new_form))
+    model, UserChangedEntryValue(index, value) -> {
+      let popup = case model.popup {
+        Visible(InsertContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, value:, value_error: option.None)
+          }
+          Visible(InsertContent(..content, entries:))
+        }
+        Visible(EditContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, value:, value_error: option.None)
+          }
+          Visible(EditContent(..content, entries:))
+        }
+        _ -> panic as "unreachable!"
+      }
       #(Model(..model, popup:), effect.none())
     }
-    _model, UserChangedInsertType(_) -> panic as "unreachable!"
 
-    Model(popup: Visible(InsertContent(..)), ..),
-      UserSubmittedInsertForm(Ok(record))
-    -> #(Model(..model, saving: True), insert_record(record, ApiInsertReturned))
-    Model(popup: Visible(InsertContent(type_, ..)), ..),
-      UserSubmittedInsertForm(Error(form))
-    -> {
-      let popup = Visible(InsertContent(type_, form))
+    model, UserChangedEntryTtl(index, ttl) -> {
+      let popup = case model.popup {
+        Visible(InsertContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, ttl:, ttl_error: option.None)
+          }
+          Visible(InsertContent(..content, entries:))
+        }
+        Visible(EditContent(entries:, ..) as content) -> {
+          let entries = {
+            use draft <- update_entry_at(entries, index)
+            EntryDraft(..draft, ttl:, ttl_error: option.None)
+          }
+          Visible(EditContent(..content, entries:))
+        }
+        _ -> panic as "unreachable!"
+      }
       #(Model(..model, popup:), effect.none())
     }
-    _model, UserSubmittedInsertForm(_) -> panic as "unreachable!"
+
+    model, UserAddedEntry -> {
+      let popup = case model.popup {
+        Visible(InsertContent(entries:, ..) as content) -> {
+          let entries = list.append(entries, default_entries())
+          Visible(InsertContent(..content, entries:))
+        }
+        Visible(EditContent(entries:, ..) as content) -> {
+          let entries = list.append(entries, default_entries())
+          Visible(EditContent(..content, entries:))
+        }
+        _ -> panic as "unreachable!"
+      }
+      #(Model(..model, popup:), effect.none())
+    }
+
+    model, UserRemovedEntry(index) -> {
+      let popup = case model.popup {
+        Visible(InsertContent(entries:, ..) as content) -> {
+          let lists = [list.take(entries, index), list.drop(entries, index + 1)]
+          Visible(InsertContent(..content, entries: list.flatten(lists)))
+        }
+        Visible(EditContent(entries:, ..) as content) -> {
+          let lists = [list.take(entries, index), list.drop(entries, index + 1)]
+          Visible(EditContent(..content, entries: list.flatten(lists)))
+        }
+        _ -> panic as "unreachable!"
+      }
+      #(Model(..model, popup:), effect.none())
+    }
+
+    Model(popup: Visible(InsertContent(domain:, entries:, ..)), ..),
+      UserSubmittedInsert
+    -> {
+      let domain_trimmed = string.trim(domain)
+      let domain_error = case string.is_empty(domain_trimmed) {
+        True -> option.Some("must not be blank")
+        False -> option.None
+      }
+
+      let entries_result = validate_entries(entries)
+
+      case domain_error, entries_result {
+        option.None, Ok(valid_entries) -> {
+          records.DomainGroup(name: domain_trimmed, records: valid_entries)
+          |> api_insert_domain(ApiInsertReturned)
+          |> pair.new(Model(..model, saving: True), _)
+        }
+        _, _ -> {
+          let entries = case entries_result {
+            Ok(_) -> entries
+            Error(updated) -> updated
+          }
+
+          let content = InsertContent(domain:, domain_error:, entries:)
+          #(Model(..model, popup: Visible(content)), effect.none())
+        }
+      }
+    }
+    _, UserSubmittedInsert -> panic as "unreachable!"
 
     Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(record:, result: Ok(_))
+      ApiInsertReturned(group:, result: Ok(_))
     -> {
-      let records = list.append(model.records, [record])
-      #(Model(..model, records:, saving: False, popup: Hidden), effect.none())
+      let domains = list.append(model.domains, [group])
+      #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
     Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(record: _, result: Error(_))
+      ApiInsertReturned(group: _, result: Error(_))
     -> {
-      let error = option.Some("Something went wrong inserting record!")
+      let error = option.Some("Something went wrong inserting domain!")
       #(Model(..model, saving: False, error:), effect.none())
     }
-    Model(..), ApiInsertReturned(..) -> panic as "unreachable!"
+    _, ApiInsertReturned(..) -> panic as "unreachable!"
 
-    Model(popup: Hidden, ..), UserClickedEdit(current_record:) -> {
-      let popup =
-        Visible(UpdateContent(current_record, new_update_form(current_record)))
-      #(Model(..model, popup:), effect.none())
+    Model(popup: Hidden, ..), UserClickedEdit(domain) -> {
+      case list.find(model.domains, fn(group) { group.name == domain }) {
+        Ok(group) -> {
+          let entries = list.map(group.records, entry_to_draft)
+          let content = EditContent(domain:, entries:)
+          #(Model(..model, popup: Visible(content)), effect.none())
+        }
+        Error(Nil) -> panic as "domain not found"
+      }
     }
-    _model, UserClickedEdit(..) -> panic as "unreachable!"
+    _, UserClickedEdit(_) -> panic as "unreachable!"
 
-    Model(popup: Visible(UpdateContent(..)), ..),
-      UserSubmittedUpdateForm(Ok(record))
-    -> #(Model(..model, saving: True), update_record(record, ApiUpdateReturned))
-    Model(popup: Visible(UpdateContent(original, ..)), ..),
-      UserSubmittedUpdateForm(Error(form))
-    -> #(
-      Model(..model, popup: Visible(UpdateContent(original, form))),
-      effect.none(),
-    )
-    _model, UserSubmittedUpdateForm(_) -> panic as "unreachable!"
-
-    Model(popup: Visible(UpdateContent(..)), ..),
-      ApiUpdateReturned(updated_record:, result: Ok(_))
+    Model(popup: Visible(EditContent(domain:, entries:)), ..), UserSubmittedEdit
     -> {
-      let records =
-        list.map(model.records, fn(record) {
-          case record, updated_record {
-            records.ARecord(name: a, ..), records.ARecord(name: b, ..)
-            | records.AaaaRecord(name: a, ..), records.AaaaRecord(name: b, ..)
-            | records.CnameRecord(name: a, ..), records.CnameRecord(name: b, ..)
-              if a == b
-            -> updated_record
-            _, _ -> record
+      case validate_entries(entries) {
+        Ok(valid_entries) -> #(
+          Model(..model, saving: True),
+          api_put_domain(domain, valid_entries, ApiPutReturned),
+        )
+        Error(updated_entries) -> {
+          let content = EditContent(domain:, entries: updated_entries)
+          #(Model(..model, popup: Visible(content)), effect.none())
+        }
+      }
+    }
+    _, UserSubmittedEdit -> panic as "unreachable!"
+
+    Model(popup: Visible(EditContent(..)), ..),
+      ApiPutReturned(domain:, entries:, result: Ok(_))
+    -> {
+      let domains =
+        list.map(model.domains, fn(group) {
+          case group.name == domain {
+            True -> records.DomainGroup(name: domain, records: entries)
+            False -> group
           }
         })
-
-      #(Model(..model, records:, saving: False, popup: Hidden), effect.none())
+      #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
-    Model(popup: Visible(UpdateContent(..)), ..),
-      ApiUpdateReturned(updated_record: _, result: Error(_))
+    Model(popup: Visible(EditContent(..)), ..),
+      ApiPutReturned(domain: _, entries: _, result: Error(_))
     -> {
-      let error = option.Some("Something went wrong updating record!")
+      let error = option.Some("Something went wrong updating domain!")
       #(Model(..model, saving: False, error:), effect.none())
     }
-    Model(..), ApiUpdateReturned(..) -> panic as "unreachable!"
+    _, ApiPutReturned(..) -> panic as "unreachable!"
 
-    model, UserClickedDelete(key) -> #(
-      Model(..model, deleting: option.Some(key)),
-      delete_cancel_after(key, 3000),
+    model, UserClickedDelete(domain) -> #(
+      Model(..model, deleting: option.Some(domain)),
+      delete_cancel_after(domain, 3000),
     )
 
-    model, DeleteCancelled(key) ->
+    Model(popup: Visible(content), ..), UserClickedDeleteDomainFromEdit(domain)
+    -> #(
+      Model(..model, popup: Closing(content), deleting: option.Some(domain)),
+      delete_cancel_after(domain, 3000),
+    )
+    _, UserClickedDeleteDomainFromEdit(_) -> panic as "unreachable!"
+
+    model, DeleteCancelled(domain) ->
       case model.deleting {
-        option.Some(pending) if pending == key -> #(
+        option.Some(pending) if pending == domain -> #(
           Model(..model, deleting: option.None),
           effect.none(),
         )
         _ -> #(model, effect.none())
       }
 
-    model, UserConfirmedDelete(key) -> {
-      let #(target, type_) = key
-
+    model, UserConfirmedDelete(domain) ->
       Model(..model, saving: True, deleting: option.None)
-      |> pair.new(delete_record(target, type_, ApiDeleteReturned))
+      |> pair.new(api_delete_domain(domain, ApiDeleteReturned))
+
+    model, ApiDeleteReturned(domain:, result: Ok(_)) -> {
+      let domains =
+        list.filter(model.domains, fn(group) { group.name != domain })
+      #(Model(..model, domains:, saving: False), effect.none())
     }
-
-    model, ApiDeleteReturned(key:, result: Ok(_)) -> {
-      let #(target, type_) = key
-
-      let records =
-        list.filter(model.records, fn(record) {
-          case record, type_ {
-            records.ARecord(name:, ..), records.A
-            | records.AaaaRecord(name:, ..), records.Aaaa
-            | records.CnameRecord(name:, ..), records.Cname
-            -> name != target
-            _, _ -> True
-          }
-        })
-
-      #(Model(..model, records:, saving: False), effect.none())
-    }
-    model, ApiDeleteReturned(key: _, result: Error(_)) -> {
-      let error = option.Some("Something went wrong deleting record!")
+    model, ApiDeleteReturned(domain: _, result: Error(_)) -> {
+      let error = option.Some("Something went wrong deleting domain!")
       #(Model(..model, saving: False, error:), effect.none())
     }
   }
@@ -473,32 +583,18 @@ fn view(model: Model) -> Element(Message) {
               [html.text("Loading...")],
             )
           False ->
-            html.table([attribute.class("w-full border-collapse")], [
-              html.thead([], [
-                html.tr([], [
-                  view_th("domain"),
-                  view_th("type"),
-                  view_th("value"),
-                  view_th("ttl"),
-                  html.th(
-                    [
-                      attribute.class(
-                        "w-fit pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated",
-                      ),
-                    ],
-                    [],
-                  ),
-                ]),
-              ]),
-              keyed.tbody(
-                [],
-                list.map(model.records, view_record(
-                  model.deleting,
-                  global_busy,
-                  _,
-                )),
-              ),
-            ])
+            html.div(
+              [
+                attribute.class(
+                  "flex flex-col gap-2 xs:gap-3 sm:gap-4 md:gap-5",
+                ),
+              ],
+              list.map(model.domains, view_domain_card(
+                model.deleting,
+                global_busy,
+                _,
+              )),
+            )
         },
       ],
     ),
@@ -547,22 +643,11 @@ fn view_header() -> Element(Message) {
   )
 }
 
-fn view_th(label: String) -> Element(Message) {
-  html.th(
-    [
-      attribute.class(
-        "text-left text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-subtle pb-1 xs:pb-3 sm:pb-4 md:pb-5 border-b border-elevated font-medium italic",
-      ),
-    ],
-    [html.text(label)],
-  )
-}
-
 fn view_popup(
   content: PopupContent,
   closing: Bool,
   saving: Bool,
-) -> element.Element(Message) {
+) -> Element(Message) {
   let #(overlay_class, card_class) = case closing {
     True -> #("overlay-exit", "popup-exit")
     False -> #("overlay-enter", "popup-enter")
@@ -590,15 +675,17 @@ fn view_popup(
       html.div(
         [
           attribute.class(
-            "bg-surface border border-elevated rounded-xl p-3 xs:p-5 sm:p-8 md:p-10 lg:p-12 w-[calc(100vw-3rem)] max-w-xs xs:max-w-sm sm:max-w-md md:max-w-lg lg:max-w-xl xl:max-w-2xl shadow-2xl "
+            "bg-surface border border-elevated rounded-xl p-3 xs:p-5 sm:p-8 md:p-10 lg:p-12 w-[calc(100vw-3rem)] max-w-xs xs:max-w-sm sm:max-w-md md:max-w-lg lg:max-w-xl xl:max-w-2xl shadow-2xl max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden "
             <> card_class,
           ),
           event.on("animationend", decode.success(PopupAnimationEnded)),
         ],
         [
           case content {
-            InsertContent(type_, form) -> view_insert(type_, form, saving)
-            UpdateContent(record, form) -> view_update(record, form, saving)
+            InsertContent(domain:, domain_error:, entries:) ->
+              view_insert_popup(domain, domain_error, entries, saving)
+            EditContent(domain:, entries:) ->
+              view_edit_popup(domain, entries, saving)
           },
         ],
       ),
@@ -606,43 +693,78 @@ fn view_popup(
   )
 }
 
-fn view_insert(
-  type_: records.RecordType,
-  form: form.Form(records.Record),
+fn view_insert_popup(
+  domain: String,
+  domain_error: option.Option(String),
+  entries: List(EntryDraft),
   saving: Bool,
-) -> element.Element(Message) {
-  let handle_submit = fn(values) {
-    form.add_values(form, values) |> form.run |> UserSubmittedInsertForm
-  }
-
-  let value_label = case type_ {
-    records.A -> "IPv4 Address"
-    records.Aaaa -> "IPv6 Address"
-    records.Cname -> "Target"
-  }
-
-  html.form([event.on_submit(handle_submit), attribute.class("flex flex-col")], [
+) -> Element(Message) {
+  html.div([attribute.class("flex flex-col flex-1 min-h-0")], [
     html.h2(
       [
         attribute.class(
-          "text-xs xs:text-base sm:text-xl md:text-2xl font-semibold mb-2 xs:mb-4 sm:mb-6 md:mb-8",
+          "text-xs xs:text-base sm:text-xl md:text-2xl font-semibold mb-2 xs:mb-4 sm:mb-6 md:mb-8 shrink-0",
         ),
       ],
-      [html.text("Add Record")],
+      [html.text("Add Domain")],
     ),
-    html.div([attribute.class("flex gap-2 mb-4")], [
-      view_type_button("A", records.A, type_ == records.A),
-      view_type_button("AAAA", records.Aaaa, type_ == records.Aaaa),
-      view_type_button("CNAME", records.Cname, type_ == records.Cname),
+    html.div([attribute.class("flex flex-col gap-1 mb-4 shrink-0")], [
+      html.label(
+        [
+          attribute.for("domain"),
+          attribute.class(
+            "text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-muted italic",
+          ),
+        ],
+        [html.text("Domain")],
+      ),
+      html.input([
+        attribute.type_("text"),
+        attribute.id("domain"),
+        attribute.value(domain),
+        attribute.placeholder("proxmox.lan"),
+        event.on_input(UserChangedInsertDomain),
+        attribute.class(
+          "bg-elevated border "
+          <> case domain_error {
+            option.Some(_) -> "border-red-500"
+            option.None -> "border-elevated"
+          }
+          <> " rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 text-fg text-xs xs:text-sm sm:text-base outline-none focus:border-accent",
+        ),
+      ]),
+      case domain_error {
+        option.Some(err) ->
+          html.p([attribute.class("text-red-400 text-2xs xs:text-xs italic")], [
+            html.text(err),
+          ])
+        option.None -> element.none()
+      },
     ]),
-    view_input(form, is: "text", name: "name", label: "Domain"),
-    view_input(form, is: "text", name: "value", label: value_label),
-    view_input(form, is: "number", name: "ttl", label: "TTL (seconds)"),
+    html.div([attribute.class("flex-1 min-h-0 overflow-y-auto")], [
+      html.div(
+        [],
+        list.index_map(entries, fn(entry, i) {
+          view_entry_draft(i, entry, list.length(entries) > 1)
+        }),
+      ),
+      html.button(
+        [
+          attribute.type_("button"),
+          event.on_click(UserAddedEntry),
+          attribute.class(
+            "text-subtle hover:text-fg text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer mb-3 xs:mb-4 sm:mb-6 text-left",
+          ),
+        ],
+        [html.text("+ Add record")],
+      ),
+    ]),
     html.button(
       [
         attribute.disabled(saving),
+        event.on_click(UserSubmittedInsert),
         attribute.class(
-          "mt-2 xs:mt-4 sm:mt-6 py-1.5 xs:py-3 sm:py-4 md:py-5 rounded-lg text-xs xs:text-sm sm:text-base md:text-lg font-medium w-full "
+          "mt-2 xs:mt-3 shrink-0 py-1.5 xs:py-3 sm:py-4 md:py-5 rounded-lg text-xs xs:text-sm sm:text-base md:text-lg font-medium w-full "
           <> case saving {
             True -> "bg-accent/50 text-fg/50 cursor-not-allowed"
             False ->
@@ -655,18 +777,173 @@ fn view_insert(
   ])
 }
 
-fn view_type_button(
+fn view_edit_popup(
+  domain: String,
+  entries: List(EntryDraft),
+  saving: Bool,
+) -> Element(Message) {
+  html.div([attribute.class("flex flex-col flex-1 min-h-0")], [
+    html.h2(
+      [
+        attribute.class(
+          "text-xs xs:text-base sm:text-xl md:text-2xl font-semibold mb-1 shrink-0",
+        ),
+      ],
+      [html.text("Edit Domain")],
+    ),
+    html.p(
+      [
+        attribute.class(
+          "text-xs xs:text-sm text-subtle mb-3 xs:mb-4 sm:mb-6 italic break-all shrink-0",
+        ),
+      ],
+      [html.text(domain)],
+    ),
+    html.div([attribute.class("flex-1 min-h-0 overflow-y-auto")], [
+      html.div(
+        [],
+        list.index_map(entries, fn(entry, i) {
+          view_entry_draft(i, entry, list.length(entries) > 1)
+        }),
+      ),
+      html.button(
+        [
+          attribute.type_("button"),
+          event.on_click(UserAddedEntry),
+          attribute.class(
+            "text-subtle hover:text-fg text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer mb-3 xs:mb-4 sm:mb-6 text-left",
+          ),
+        ],
+        [html.text("+ Add record")],
+      ),
+    ]),
+    html.div(
+      [attribute.class("flex justify-between items-center mt-2 shrink-0")],
+      [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.disabled(saving),
+            event.on_click(UserClickedDeleteDomainFromEdit(domain)),
+            attribute.class(
+              "text-red-400 hover:text-red-300 text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer",
+            ),
+          ],
+          [html.text("Delete Domain")],
+        ),
+        html.button(
+          [
+            attribute.disabled(saving),
+            event.on_click(UserSubmittedEdit),
+            attribute.class(
+              "py-1.5 xs:py-2 sm:py-3 px-4 xs:px-5 sm:px-7 rounded-lg text-xs xs:text-sm sm:text-base font-medium "
+              <> case saving {
+                True -> "bg-accent/50 text-fg/50 cursor-not-allowed"
+                False ->
+                  "bg-accent text-fg hover:bg-accent/80 transition-colors cursor-pointer"
+              },
+            ),
+          ],
+          [html.text("Save")],
+        ),
+      ],
+    ),
+  ])
+}
+
+fn view_entry_draft(
+  index: Int,
+  draft: EntryDraft,
+  can_remove: Bool,
+) -> Element(Message) {
+  let value_input_class =
+    "bg-elevated border "
+    <> case draft.value_error {
+      option.Some(_) -> "border-red-500"
+      option.None -> "border-elevated focus:border-accent"
+    }
+    <> " rounded-lg px-2 py-1 xs:px-3 xs:py-2 text-fg text-xs xs:text-sm outline-none w-full"
+
+  let ttl_input_class =
+    "bg-elevated border "
+    <> case draft.ttl_error {
+      option.Some(_) -> "border-red-500"
+      option.None -> "border-elevated focus:border-accent"
+    }
+    <> " rounded-lg px-2 py-1 xs:px-2 xs:py-2 text-fg text-xs xs:text-sm outline-none w-full"
+
+  html.div([attribute.class("mb-3 xs:mb-4")], [
+    html.div([attribute.class("flex items-center gap-1 xs:gap-1.5 mb-1.5")], [
+      view_entry_type_button("A", records.A, draft.type_, index),
+      view_entry_type_button("AAAA", records.Aaaa, draft.type_, index),
+      view_entry_type_button("CNAME", records.Cname, draft.type_, index),
+      html.div([attribute.class("flex-1")], []),
+      case can_remove {
+        True ->
+          html.button(
+            [
+              attribute.type_("button"),
+              event.on_click(UserRemovedEntry(index)),
+              attribute.class(
+                "text-subtle hover:text-red-400 transition-colors cursor-pointer text-sm xs:text-base leading-none",
+              ),
+            ],
+            [html.text("×")],
+          )
+        False -> element.none()
+      },
+    ]),
+    html.div([attribute.class("flex gap-1.5 xs:gap-2")], [
+      html.div([attribute.class("flex-1 min-w-0 flex flex-col gap-1")], [
+        html.input([
+          attribute.type_("text"),
+          attribute.value(draft.value),
+          attribute.placeholder(value_placeholder(draft.type_)),
+          event.on_input(UserChangedEntryValue(index, _)),
+          attribute.class(value_input_class),
+        ]),
+        case draft.value_error {
+          option.Some(err) ->
+            html.p([attribute.class("text-red-400 text-2xs italic")], [
+              html.text(err),
+            ])
+          option.None -> element.none()
+        },
+      ]),
+      html.div([attribute.class("w-14 xs:w-16 sm:w-20 flex flex-col gap-1")], [
+        html.input([
+          attribute.type_("number"),
+          attribute.value(draft.ttl),
+          attribute.attribute("min", "1"),
+          attribute.attribute("max", "86400"),
+          event.on_input(UserChangedEntryTtl(index, _)),
+          attribute.class(ttl_input_class),
+        ]),
+        case draft.ttl_error {
+          option.Some(err) ->
+            html.p([attribute.class("text-red-400 text-2xs italic")], [
+              html.text(err),
+            ])
+          option.None -> element.none()
+        },
+      ]),
+    ]),
+  ])
+}
+
+fn view_entry_type_button(
   label: String,
   type_: records.RecordType,
-  active: Bool,
+  active: records.RecordType,
+  index: Int,
 ) -> Element(Message) {
   html.button(
     [
       attribute.type_("button"),
-      event.on_click(UserChangedInsertType(type_)),
+      event.on_click(UserChangedEntryType(index, type_)),
       attribute.class(
-        "px-2 py-1 xs:px-3 xs:py-1.5 sm:px-4 sm:py-2 rounded text-2xs xs:text-xs sm:text-sm font-medium transition-colors cursor-pointer "
-        <> case active {
+        "px-1.5 py-0.5 xs:px-2 xs:py-1 rounded text-2xs xs:text-xs font-medium transition-colors cursor-pointer "
+        <> case type_ == active {
           True -> "bg-accent text-fg"
           False -> "bg-elevated text-subtle hover:text-fg"
         },
@@ -676,80 +953,132 @@ fn view_type_button(
   )
 }
 
-fn view_update(
-  record: records.Record,
-  form: form.Form(records.Record),
-  saving: Bool,
+fn value_placeholder(type_: records.RecordType) -> String {
+  case type_ {
+    records.A -> "192.168.1.1"
+    records.Aaaa -> "::1"
+    records.Cname -> "target.domain"
+  }
+}
+
+fn view_domain_card(
+  deleting: option.Option(String),
+  global_busy: Bool,
+  group: records.DomainGroup,
 ) -> Element(Message) {
-  let handle_submit = fn(values) {
-    form.add_values(form, values) |> form.run |> UserSubmittedUpdateForm
+  let dimmed = case deleting {
+    option.Some(pending) if pending == group.name -> False
+    option.Some(_) -> True
+    option.None -> global_busy
   }
 
-  let value_label = case record {
-    records.ARecord(..) -> "IPv4 Address"
-    records.AaaaRecord(..) -> "IPv6 Address"
-    records.CnameRecord(..) -> "Target"
-  }
+  let card_class =
+    "bg-surface border border-elevated rounded-xl p-3 xs:p-5 sm:p-6 md:p-8 transition-opacity duration-200"
+    <> case dimmed {
+      True -> " opacity-25 pointer-events-none"
+      False -> ""
+    }
 
-  html.form([event.on_submit(handle_submit), attribute.class("flex flex-col")], [
-    html.h2([attribute.class("text-base font-semibold mb-1")], [
-      html.text("Edit Record"),
-    ]),
-    html.p([attribute.class("text-xs text-subtle mb-4 italic")], [
-      html.text(record.name),
-    ]),
-    view_input(form, is: "text", name: "value", label: value_label),
-    view_input(form, is: "number", name: "ttl", label: "TTL (seconds)"),
-    html.button(
+  html.div([attribute.class(card_class)], [
+    html.h2(
       [
-        attribute.disabled(saving),
         attribute.class(
-          "mt-2 xs:mt-4 sm:mt-6 py-1.5 xs:py-3 sm:py-4 md:py-5 rounded-lg text-xs xs:text-sm sm:text-base md:text-lg font-medium w-full "
-          <> case saving {
-            True -> "bg-accent/50 text-fg/50 cursor-not-allowed"
-            False ->
-              "bg-accent text-fg hover:bg-accent/80 transition-colors cursor-pointer"
-          },
+          "font-semibold text-xs xs:text-sm sm:text-base md:text-lg mb-2 xs:mb-3 sm:mb-4 break-all",
         ),
       ],
-      [html.text("Update")],
+      [html.text(group.name)],
     ),
+    html.div(
+      [
+        attribute.class("space-y-1 xs:space-y-1.5 sm:space-y-2 mb-3 sm:mb-5"),
+      ],
+      list.map(group.records, view_entry_row),
+    ),
+    html.div([attribute.class("flex justify-end gap-2 xs:gap-3 sm:gap-4")], [
+      html.button(
+        [
+          event.on_click(UserClickedEdit(group.name)),
+          attribute.class(
+            "text-subtle hover:text-fg text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer "
+            <> case deleting {
+              option.Some(pending) if pending == group.name ->
+                "mr-[10px] xs:mr-[20.5px] sm:mr-[25.5px]"
+              _ -> ""
+            },
+          ),
+        ],
+        [html.text("Edit")],
+      ),
+      view_card_delete_button(group.name, deleting),
+    ]),
   ])
 }
 
-fn view_input(
-  frm: form.Form(data),
-  is type_: String,
-  name name: String,
-  label label: String,
-) -> Element(Message) {
-  let errors = form.field_error_messages(frm, name)
+fn view_entry_row(entry: records.RecordEntry) -> Element(Message) {
+  let #(type_label, value) = case entry {
+    records.AEntry(ip:, ..) -> #("A", ip.ipv4_to_string(ip))
+    records.AaaaEntry(ip:, ..) -> #("AAAA", ip.ipv6_to_string(ip))
+    records.CnameEntry(target:, ..) -> #("CNAME", target)
+  }
+  let ttl_label = int.to_string(entry.ttl) <> "s"
 
-  html.div([attribute.class("flex flex-col gap-1 mb-4")], [
-    html.label(
-      [
-        attribute.for(name),
-        attribute.class(
-          "text-2xs xs:text-xs sm:text-sm md:text-base uppercase tracking-wider text-muted italic",
-        ),
-      ],
-      [html.text(label)],
-    ),
-    html.input([
-      attribute.type_(type_),
-      attribute.id(name),
-      attribute.name(name),
-      attribute.default_value(form.field_value(frm, name)),
+  html.div(
+    [
       attribute.class(
-        "bg-elevated border border-elevated rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 md:px-6 md:py-4 text-fg text-xs xs:text-sm sm:text-base md:text-lg outline-none focus:border-accent",
+        "grid grid-cols-[2.5rem_1fr_auto] xs:grid-cols-[3.5rem_1fr_auto] sm:grid-cols-[4.5rem_1fr_auto] gap-x-2 xs:gap-x-3 sm:gap-x-4 items-baseline",
       ),
-    ]),
-    ..list.map(errors, fn(message) {
-      html.p([attribute.class("text-red-400 text-xs italic")], [
-        html.text(message),
-      ])
-    })
-  ])
+    ],
+    [
+      html.span(
+        [
+          attribute.class(
+            "text-subtle font-mono text-2xs xs:text-xs sm:text-sm",
+          ),
+        ],
+        [html.text(type_label)],
+      ),
+      html.span(
+        [
+          attribute.class(
+            "text-muted font-mono text-2xs xs:text-xs sm:text-sm break-all",
+          ),
+        ],
+        [html.text(value)],
+      ),
+      html.span(
+        [attribute.class("text-subtle text-2xs xs:text-xs whitespace-nowrap")],
+        [html.text(ttl_label)],
+      ),
+    ],
+  )
+}
+
+fn view_card_delete_button(
+  domain: String,
+  deleting: option.Option(String),
+) -> Element(Message) {
+  case deleting {
+    option.Some(pending) if pending == domain ->
+      html.button(
+        [
+          event.on_click(UserConfirmedDelete(domain)),
+          attribute.class(
+            "text-red-400 hover:text-red-300 text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer italic",
+          ),
+        ],
+        [html.text("Sure?")],
+      )
+    _ ->
+      html.button(
+        [
+          event.on_click(UserClickedDelete(domain)),
+          attribute.class(
+            "text-subtle hover:text-red-400 text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer",
+          ),
+        ],
+        [html.text("Delete")],
+      )
+  }
 }
 
 fn view_add_icon() -> Element(msg) {
@@ -771,123 +1100,4 @@ fn view_add_icon() -> Element(msg) {
       ]),
     ],
   )
-}
-
-fn record_type(record: records.Record) -> records.RecordType {
-  case record {
-    records.ARecord(..) -> records.A
-    records.AaaaRecord(..) -> records.Aaaa
-    records.CnameRecord(..) -> records.Cname
-  }
-}
-
-fn view_record(
-  deleting: option.Option(#(String, records.RecordType)),
-  global_busy: Bool,
-  record: records.Record,
-) -> #(String, Element(Message)) {
-  let type_label = case record {
-    records.ARecord(..) -> "A"
-    records.AaaaRecord(..) -> "AAAA"
-    records.CnameRecord(..) -> "CNAME"
-  }
-
-  let value = case record {
-    records.ARecord(ip:, ..) -> ip.ipv4_to_string(ip)
-    records.AaaaRecord(ip:, ..) -> ip.ipv6_to_string(ip)
-    records.CnameRecord(target:, ..) -> target
-  }
-
-  let ttl_label = int.to_string(record.ttl) <> "s"
-  let key = record.name <> "/" <> type_label
-  let this_key = #(record.name, record_type(record))
-
-  let dimmed = case deleting {
-    option.Some(pending) if pending == this_key -> False
-    option.Some(_) -> True
-    option.None -> global_busy
-  }
-
-  let row_class =
-    "border-b border-elevated transition-opacity duration-200"
-    <> case dimmed {
-      True -> " opacity-25 pointer-events-none"
-      False -> ""
-    }
-
-  let delete_button = case deleting {
-    option.Some(pending) if pending == this_key ->
-      html.button(
-        [
-          event.on_click(UserConfirmedDelete(this_key)),
-          attribute.class(
-            "text-red-400 hover:text-red-300 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer italic",
-          ),
-        ],
-        [html.text("Sure?")],
-      )
-    _ ->
-      html.button(
-        [
-          event.on_click(UserClickedDelete(this_key)),
-          attribute.class(
-            "text-subtle hover:text-red-400 text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer",
-          ),
-        ],
-        [html.text("Delete")],
-      )
-  }
-
-  html.tr([attribute.class(row_class)], [
-    html.td(
-      [
-        attribute.class(
-          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-fg",
-        ),
-      ],
-      [html.text(record.name)],
-    ),
-    html.td(
-      [
-        attribute.class(
-          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-subtle font-mono",
-        ),
-      ],
-      [html.text(type_label)],
-    ),
-    html.td(
-      [
-        attribute.class(
-          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-muted",
-        ),
-      ],
-      [html.text(value)],
-    ),
-    html.td(
-      [
-        attribute.class(
-          "py-1 xs:py-3 sm:py-4 md:py-5 text-2xs xs:text-sm sm:text-base md:text-lg text-subtle",
-        ),
-      ],
-      [html.text(ttl_label)],
-    ),
-    html.td([attribute.class("py-1 xs:py-3 sm:py-4 md:py-5 text-right")], [
-      html.button(
-        [
-          event.on_click(UserClickedEdit(record)),
-          attribute.class(
-            "text-subtle hover:text-fg text-2xs xs:text-sm sm:text-base md:text-lg transition-colors cursor-pointer "
-            <> case deleting {
-              option.Some(pending) if pending == this_key ->
-                "mr-[10px] xs:mr-[20.5px] sm:mr-[25.5px] md:mr-[31px]"
-              _ -> "mr-1 xs:mr-3 sm:mr-4 md:mr-5"
-            },
-          ),
-        ],
-        [html.text("Edit")],
-      ),
-      delete_button,
-    ]),
-  ])
-  |> pair.new(key, _)
 }

@@ -63,6 +63,93 @@ pub fn record_to_json(record: Record) -> json.Json {
   }
 }
 
+pub type RecordEntry {
+  AEntry(ttl: Int, ip: ip.Ipv4)
+  AaaaEntry(ttl: Int, ip: ip.Ipv6)
+  CnameEntry(ttl: Int, target: String)
+}
+
+pub type DomainGroup {
+  DomainGroup(name: String, records: List(RecordEntry))
+}
+
+pub fn record_to_entry(record: Record) -> RecordEntry {
+  case record {
+    ARecord(ttl:, ip:, ..) -> AEntry(ttl:, ip:)
+    AaaaRecord(ttl:, ip:, ..) -> AaaaEntry(ttl:, ip:)
+    CnameRecord(ttl:, target:, ..) -> CnameEntry(ttl:, target:)
+  }
+}
+
+pub fn entry_to_record(name: String, entry: RecordEntry) -> Record {
+  case entry {
+    AEntry(ttl:, ip:) -> ARecord(name:, ttl:, ip:)
+    AaaaEntry(ttl:, ip:) -> AaaaRecord(name:, ttl:, ip:)
+    CnameEntry(ttl:, target:) -> CnameRecord(name:, ttl:, target:)
+  }
+}
+
+pub fn record_entry_to_json(entry: RecordEntry) -> json.Json {
+  case entry {
+    AEntry(ttl:, ip:) ->
+      json.object([
+        #("type", json.string("a")),
+        #("ttl", json.int(ttl)),
+        #("ip", ip.ipv4_to_json(ip)),
+      ])
+    AaaaEntry(ttl:, ip:) ->
+      json.object([
+        #("type", json.string("aaaa")),
+        #("ttl", json.int(ttl)),
+        #("ip", ip.ipv6_to_json(ip)),
+      ])
+    CnameEntry(ttl:, target:) ->
+      json.object([
+        #("type", json.string("cname")),
+        #("ttl", json.int(ttl)),
+        #("target", json.string(target)),
+      ])
+  }
+}
+
+pub fn domain_group_to_json(group: DomainGroup) -> json.Json {
+  json.object([
+    #("name", json.string(group.name)),
+    #("records", json.array(group.records, record_entry_to_json)),
+  ])
+}
+
+pub fn record_entry_decoder() -> decode.Decoder(RecordEntry) {
+  use variant <- decode.field("type", decode.string)
+  case variant {
+    "a" -> {
+      use ttl <- decode.field("ttl", decode.int)
+      use ip <- decode.field("ip", ip.ipv4_decoder())
+      decode.success(AEntry(ttl:, ip:))
+    }
+    "aaaa" -> {
+      use ttl <- decode.field("ttl", decode.int)
+      use ip <- decode.field("ip", ip.ipv6_decoder())
+      decode.success(AaaaEntry(ttl:, ip:))
+    }
+    "cname" -> {
+      use ttl <- decode.field("ttl", decode.int)
+      use target <- decode.field("target", decode.string)
+      decode.success(CnameEntry(ttl:, target:))
+    }
+    _ -> decode.failure(AEntry(ttl: 0, ip: ip.Ipv4(0, 0, 0, 0)), "RecordEntry")
+  }
+}
+
+pub fn domain_group_decoder() -> decode.Decoder(DomainGroup) {
+  use name <- decode.field("name", decode.string)
+  use records <- decode.field(
+    "records",
+    decode.list(of: record_entry_decoder()),
+  )
+  decode.success(DomainGroup(name:, records:))
+}
+
 pub type RecordType {
   A
   Aaaa

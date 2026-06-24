@@ -1,7 +1,7 @@
 -module(cache_ffi).
 
--export([new/0, insert/2, insert_with_ttl/2, lookup/2, delete/2, cleanup_expired/0,
-         system_time_seconds/0]).
+-export([new/0, insert/2, insert_with_ttl/2, lookup/2, delete/2, delete_domain/1,
+         cleanup_expired/0, system_time_seconds/0]).
 
 new() ->
     ets:new(dns,
@@ -53,6 +53,10 @@ remaining(Expiry, _Ttl, Now) ->
 
 delete(Name, Type) ->
     ets:match_delete(dns, {{Name, Type, '_'}, '_'}),
+    nil.
+
+delete_domain(Name) ->
+    ets:match_delete(dns, {{Name, '_', '_'}, '_'}),
     nil.
 
 cleanup_expired() ->

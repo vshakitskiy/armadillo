@@ -1,5 +1,6 @@
 import envoy
 import ewe
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
@@ -7,10 +8,10 @@ import gleam/http/request
 import gleam/http/response
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/result
 import logging
 import server/cache
-import server/dns/protocol as dns
 import server/env
 import server/zone
 import shared/records
@@ -59,91 +60,89 @@ fn handler(
   use <- wisp.rescue_crashes
 
   case request.method, wisp.path_segments(request) {
-    http.Get, ["api", "records"] -> {
+    http.Get, ["api", "domains"] -> {
       zone.get_records(context.zone)
-      |> json.array(of: records.record_to_json)
+      |> list.group(fn(record) { record.name })
+      |> dict.to_list
+      |> list.map(fn(pair) {
+        let #(name, records) = pair
+
+        records.DomainGroup(
+          name:,
+          records: list.map(records, records.record_to_entry),
+        )
+      })
+      |> json.array(of: records.domain_group_to_json)
       |> json.to_string
       |> wisp.json_response(200)
     }
 
-    http.Post, ["api", "records"] -> {
+    http.Post, ["api", "domains"] -> {
       use json <- wisp.require_json(request)
 
-      case decode.run(json, records.record_decoder()) {
-        Ok(record) -> {
-          case zone.insert_record(context.zone, record) {
+      case decode.run(json, records.domain_group_decoder()) {
+        Ok(group) -> {
+          case zone.insert_domain(context.zone, group.name, group.records) {
             Ok(Nil) -> {
-              cache.set(record)
+              list.each(group.records, fn(entry) {
+                cache.set(records.entry_to_record(group.name, entry))
+              })
               wisp.no_content()
             }
             Error(zone.Conflict) ->
               wisp.response(409)
-              |> wisp.string_body(
-                "Incomming record conflicting with current records",
-              )
+              |> wisp.string_body("Domain already exists")
             Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
             Error(zone.NotFound) -> panic as "unreachable!"
           }
         }
-        Error(_errors) -> wisp.bad_request("Invalid body")
+        Error(_) -> wisp.bad_request("Invalid body")
       }
     }
 
-    http.Patch, ["api", "records"] -> {
+    http.Put, ["api", "domains", name] -> {
       use json <- wisp.require_json(request)
 
-      case decode.run(json, records.record_decoder()) {
-        Ok(record) -> {
-          case zone.update_record(context.zone, record) {
+      case decode.run(json, decode.list(of: records.record_entry_decoder())) {
+        Ok(entries) -> {
+          case zone.put_domain(context.zone, name, entries) {
             Ok(Nil) -> {
-              cache.set(record)
+              cache.delete_domain(name)
+              list.each(entries, fn(entry) {
+                cache.set(records.entry_to_record(name, entry))
+              })
               wisp.no_content()
             }
+            Error(zone.Conflict) ->
+              wisp.response(409)
+              |> wisp.string_body("CNAME cannot coexist with A or AAAA records")
             Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
-            Error(zone.NotFound) ->
-              wisp.not_found()
-              |> wisp.string_body("Record not found")
-            Error(zone.Conflict) -> panic as "unreachable!"
+            Error(zone.NotFound) -> panic as "unreachable!"
           }
         }
-        Error(_errors) -> wisp.bad_request("Invalid body")
+        Error(_) -> wisp.bad_request("Invalid body")
       }
     }
 
-    http.Delete, ["api", "records"] -> {
-      use json <- wisp.require_json(request)
-
-      let decoder = {
-        use name <- decode.field("name", decode.string)
-        use type_ <- decode.field("type", records.type_decoder())
-
-        decode.success(#(name, type_))
-      }
-
-      case decode.run(json, decoder) {
-        Ok(#(name, type_)) -> {
-          let type_ = dns.from_record_type(type_)
-
-          case zone.delete_record(context.zone, name, type_) {
-            Ok(Nil) -> {
-              cache.delete(name, type_)
-              wisp.no_content()
-            }
-            Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
-            Error(zone.Conflict) | Error(zone.NotFound) ->
-              panic as "unreachable!"
-          }
+    http.Delete, ["api", "domains", name] -> {
+      case zone.delete_domain(context.zone, name) {
+        Ok(Nil) -> {
+          cache.delete_domain(name)
+          wisp.no_content()
         }
-        Error(_errors) -> wisp.bad_request("Invalid body")
+        Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+        Error(_) -> panic as "unreachable!"
       }
     }
 
     _, _ -> {
-      let assert Ok(priv) = wisp.priv_directory("server")
-
-      wisp.serve_static(request, under: "/", from: priv, next: fn() {
-        wisp.not_found()
-      })
+      case wisp.priv_directory("server") {
+        Ok(priv) -> {
+          use <- wisp.serve_static(request, under: "/", from: priv)
+          wisp.not_found()
+        }
+        Error(Nil) -> wisp.internal_server_error()
+      }
     }
   }
 }
