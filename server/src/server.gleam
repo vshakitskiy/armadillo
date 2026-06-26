@@ -1,3 +1,4 @@
+import envoy
 import gleam/erlang/application
 import gleam/erlang/process
 import gleam/int
@@ -26,12 +27,12 @@ pub fn main() -> Nil {
 @external(erlang, "terminal_ffi", "clear")
 pub fn clear_terminal() -> Nil
 
-const zone_path = "../data/local.zone"
-
 pub fn start(
   _type: application.StartType,
   _args: List(arg),
 ) -> Result(process.Pid, actor.StartError) {
+  let zone_path = envoy.get("ZONE_FILE") |> result.unwrap("/data/local.zone")
+
   clear_terminal()
   io.println("\n\n" <> name <> "\n\n")
 
@@ -39,8 +40,11 @@ pub fn start(
 
   let ttl = env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
 
-  let assert Ok(zone) = zone.read(zone_path, ttl)
-  cache.init(zone.records)
+  let records = case zone.read(zone_path, ttl) {
+    Ok(zone) -> zone.records
+    Error(_) -> []
+  }
+  cache.init(records)
 
   let resolver_name = process.new_name("resolver_factory")
   let zone_name = process.new_name("zone_worker")

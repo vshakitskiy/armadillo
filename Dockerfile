@@ -30,6 +30,7 @@ COPY --chown=armadillo:armadillo --from=server-build /app/server/build/erlang-sh
 ENV DNS_PORT=53
 ENV DNS_UPSTREAM=8.8.8.8
 ENV API_PORT=3000
+ENV ZONE_FILE=/data/local.zone
 VOLUME /data
 WORKDIR /app
 USER armadillo

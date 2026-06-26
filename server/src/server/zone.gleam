@@ -1,3 +1,4 @@
+import filepath
 import gleam/bool
 import gleam/erlang/process
 import gleam/int
@@ -7,6 +8,7 @@ import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import logging
 import server/dns/protocol as dns
 import server/env
 import shared/ip
@@ -51,8 +53,32 @@ pub type ZoneError {
 pub fn worker(name: process.Name(Message), path: String, default_ttl: Int) {
   let builder =
     actor.new_with_initialiser(5000, fn(self) {
-      // todo: figure out recovery
-      let assert Ok(zone) = read(path, default_ttl)
+      let zone = case read(path, default_ttl) {
+        Ok(zone) -> zone
+        Error(IoError(simplifile.Enoent)) -> {
+          logging.log(
+            logging.Warning,
+            "Zone file not found at " <> path <> ", creating default",
+          )
+
+          write_default_zone(path, default_ttl)
+        }
+        Error(error) -> {
+          let reason = case error {
+            ParseError(message) -> "parse error: " <> message
+            IoError(error) -> "io error: " <> simplifile.describe_error(error)
+          }
+          let backup = backup_path(path)
+          logging.log(
+            logging.Warning,
+            "Zone file unreadable (" <> reason <> "), backing up to " <> backup,
+          )
+          let assert Ok(Nil) = simplifile.rename(at: path, to: backup)
+            as "back up is not possible!"
+
+          write_default_zone(path, default_ttl)
+        }
+      }
 
       actor.initialised(zone)
       |> actor.returning(self)
@@ -62,6 +88,43 @@ pub fn worker(name: process.Name(Message), path: String, default_ttl: Int) {
     |> actor.named(name)
 
   supervision.worker(fn() { actor.start(builder) })
+}
+
+fn write_default_zone(path: String, default_ttl: Int) -> Zone {
+  let soa_minimum =
+    env.get_or(
+      "DNS_SOA_MINIMUM",
+      parse: int.parse,
+      or: 3600,
+      log: "3600 seconds",
+    )
+
+  let zone =
+    Zone(
+      file_path: path,
+      serial: next_serial(0),
+      ttl: default_ttl,
+      soa_minimum:,
+      records: [],
+    )
+
+  let dir = filepath.directory_name(path)
+  let _ = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) = write(zone)
+    as "writing to zone file path is not possible!"
+
+  zone
+}
+
+fn backup_path(path: String) -> String {
+  let #(y, m, d) = erlang_date()
+
+  path
+  <> "."
+  <> int.to_string(y)
+  <> string.pad_start(int.to_string(m), 2, "0")
+  <> string.pad_start(int.to_string(d), 2, "0")
+  <> ".bak"
 }
 
 pub fn get_records(subject: process.Subject(Message)) -> List(records.Record) {
@@ -197,7 +260,7 @@ fn handle_message(zone: Zone, message: Message) {
     }
 
     InsertDomain(reply_to:, name:, entries:) -> {
-      let exists = list.any(zone.records, fn(r) { r.name == name })
+      let exists = list.any(zone.records, fn(record) { record.name == name })
       case exists {
         True -> {
           process.send(reply_to, Error(Conflict))
@@ -207,12 +270,12 @@ fn handle_message(zone: Zone, message: Message) {
       }
     }
 
-    PutDomain(reply_to:, name:, entries:) -> {
+    PutDomain(reply_to:, name:, entries:) ->
       apply_domain_put(zone, reply_to, name, entries)
-    }
 
     DeleteDomain(reply_to:, name:) -> {
-      let records = list.filter(zone.records, fn(r) { r.name != name })
+      let records =
+        list.filter(zone.records, fn(record) { record.name != name })
       let zone = Zone(..zone, serial: next_serial(zone.serial), records:)
       handle_write(zone, reply_to)
     }
@@ -226,15 +289,16 @@ fn apply_domain_put(
   entries: List(records.RecordEntry),
 ) {
   let has_cname =
-    list.any(entries, fn(e) {
-      case e {
+    list.any(entries, fn(entry) {
+      case entry {
         records.CnameEntry(..) -> True
         _ -> False
       }
     })
+
   let has_address =
-    list.any(entries, fn(e) {
-      case e {
+    list.any(entries, fn(entry) {
+      case entry {
         records.AEntry(..) | records.AaaaEntry(..) -> True
         _ -> False
       }
@@ -247,7 +311,7 @@ fn apply_domain_put(
     }
     False -> {
       let new_records = list.map(entries, records.entry_to_record(name, _))
-      let rest = list.filter(zone.records, fn(r) { r.name != name })
+      let rest = list.filter(zone.records, fn(record) { record.name != name })
       let zone =
         Zone(
           ..zone,
