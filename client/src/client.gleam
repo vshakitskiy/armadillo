@@ -4,7 +4,7 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/pair
 import gleam/result
 import gleam/string
@@ -30,8 +30,8 @@ type EntryDraft {
     type_: records.RecordType,
     value: String,
     ttl: String,
-    value_error: option.Option(String),
-    ttl_error: option.Option(String),
+    value_error: Option(String),
+    ttl_error: Option(String),
   )
 }
 
@@ -41,8 +41,8 @@ fn default_entries() -> List(EntryDraft) {
       type_: records.A,
       value: "",
       ttl: "300",
-      value_error: option.None,
-      ttl_error: option.None,
+      value_error: None,
+      ttl_error: None,
     ),
   ]
 }
@@ -52,9 +52,9 @@ type Model {
     domains: List(records.DomainGroup),
     loading: Bool,
     saving: Bool,
-    error: option.Option(String),
+    error: Option(String),
     popup: Popup,
-    deleting: option.Option(String),
+    deleting: Option(String),
   )
 }
 
@@ -67,10 +67,15 @@ type Popup {
 type PopupContent {
   InsertContent(
     domain: String,
-    domain_error: option.Option(String),
+    domain_error: Option(String),
     entries: List(EntryDraft),
+    form_error: Option(String),
   )
-  EditContent(domain: String, entries: List(EntryDraft))
+  EditContent(
+    domain: String,
+    entries: List(EntryDraft),
+    form_error: Option(String),
+  )
 }
 
 fn init(_args: Nil) -> #(Model, effect.Effect(Message)) {
@@ -78,9 +83,9 @@ fn init(_args: Nil) -> #(Model, effect.Effect(Message)) {
     domains: [],
     loading: True,
     saving: False,
-    error: option.None,
+    error: None,
     popup: Hidden,
-    deleting: option.None,
+    deleting: None,
   )
   |> pair.new(api_fetch_domains(ApiFetchReturned))
 }
@@ -170,11 +175,11 @@ type Message {
 }
 
 @external(javascript, "./timer_ffi.mjs", "set_timeout")
-fn set_timeout(callback: fn() -> Nil, ms: Int) -> Nil
+fn set_timeout(ms: Int, callback: fn() -> Nil) -> Nil
 
 fn delete_cancel_after(domain: String, ms: Int) -> effect.Effect(Message) {
   use dispatch <- effect.from
-  use <- set_timeout(_, ms)
+  use <- set_timeout(ms)
   dispatch(DeleteCancelled(domain))
 }
 
@@ -224,19 +229,18 @@ fn validate_entry(
     Ok(records.CnameEntry(target:, ..)), Ok(ttl) ->
       Ok(records.CnameEntry(ttl:, target:))
     _, _ ->
-      Error(
-        EntryDraft(
-          ..draft,
-          value_error: case value_result {
-            Error(msg) -> option.Some(msg)
-            Ok(_) -> option.None
-          },
-          ttl_error: case ttl_result {
-            Error(msg) -> option.Some(msg)
-            Ok(_) -> option.None
-          },
-        ),
+      EntryDraft(
+        ..draft,
+        value_error: case value_result {
+          Error(msg) -> Some(msg)
+          Ok(_) -> None
+        },
+        ttl_error: case ttl_result {
+          Error(msg) -> Some(msg)
+          Ok(_) -> None
+        },
       )
+      |> Error
   }
 }
 
@@ -249,16 +253,15 @@ fn validate_entries(
   case any_error {
     False -> Ok(list.filter_map(results, function.identity))
     True ->
-      Error(
-        list.zip(drafts, results)
-        |> list.map(fn(pair) {
-          let #(draft, result) = pair
-          case result {
-            Ok(_) -> draft
-            Error(with_errors) -> with_errors
-          }
-        }),
-      )
+      list.zip(drafts, results)
+      |> list.map(fn(pair) {
+        let #(draft, result) = pair
+        case result {
+          Ok(_) -> draft
+          Error(with_errors) -> with_errors
+        }
+      })
+      |> Error
   }
 }
 
@@ -273,9 +276,21 @@ fn entry_to_draft(entry: records.RecordEntry) -> EntryDraft {
     type_:,
     value:,
     ttl: int.to_string(entry.ttl),
-    value_error: option.None,
-    ttl_error: option.None,
+    value_error: None,
+    ttl_error: None,
   )
+}
+
+fn api_error(err: rsvp.Error(String)) -> String {
+  case err {
+    rsvp.HttpError(resp) ->
+      case string.is_empty(string.trim(resp.body)) {
+        False -> resp.body
+        True -> "Internal server error"
+      }
+    rsvp.NetworkError -> "Check your connection"
+    _ -> "Something went wrong"
+  }
 }
 
 fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
@@ -284,9 +299,9 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       Model(..model, domains:, loading: False),
       effect.none(),
     )
-    model, ApiFetchReturned(Error(_)) -> {
-      let error = option.Some("Something went wrong!")
-      #(Model(..model, loading: False, error:), effect.none())
+    model, ApiFetchReturned(Error(error)) -> {
+      let error = api_error(error)
+      #(Model(..model, loading: False, error: Some(error)), effect.none())
     }
 
     Model(popup: Hidden, ..), UserClosedPopup -> panic as "unreachable!"
@@ -307,8 +322,9 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       let content =
         InsertContent(
           domain: "",
-          domain_error: option.None,
+          domain_error: None,
           entries: default_entries(),
+          form_error: None,
         )
       #(Model(..model, popup: Visible(content)), effect.none())
     }
@@ -317,7 +333,8 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
     Model(popup: Visible(InsertContent(entries:, ..)), ..),
       UserChangedInsertDomain(domain)
     -> {
-      let content = InsertContent(domain:, domain_error: option.None, entries:)
+      let content =
+        InsertContent(domain:, domain_error: None, entries:, form_error: None)
       #(Model(..model, popup: Visible(content)), effect.none())
     }
     _, UserChangedInsertDomain(_) -> panic as "unreachable!"
@@ -327,14 +344,14 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         Visible(InsertContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, type_:, value_error: option.None)
+            EntryDraft(..draft, type_:, value_error: None)
           }
           Visible(InsertContent(..content, entries:))
         }
         Visible(EditContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, type_:, value_error: option.None)
+            EntryDraft(..draft, type_:, value_error: None)
           }
           Visible(EditContent(..content, entries:))
         }
@@ -348,14 +365,14 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         Visible(InsertContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, value:, value_error: option.None)
+            EntryDraft(..draft, value:, value_error: None)
           }
           Visible(InsertContent(..content, entries:))
         }
         Visible(EditContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, value:, value_error: option.None)
+            EntryDraft(..draft, value:, value_error: None)
           }
           Visible(EditContent(..content, entries:))
         }
@@ -369,14 +386,14 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         Visible(InsertContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, ttl:, ttl_error: option.None)
+            EntryDraft(..draft, ttl:, ttl_error: None)
           }
           Visible(InsertContent(..content, entries:))
         }
         Visible(EditContent(entries:, ..) as content) -> {
           let entries = {
             use draft <- update_entry_at(entries, index)
-            EntryDraft(..draft, ttl:, ttl_error: option.None)
+            EntryDraft(..draft, ttl:, ttl_error: None)
           }
           Visible(EditContent(..content, entries:))
         }
@@ -415,30 +432,30 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       #(Model(..model, popup:), effect.none())
     }
 
-    Model(popup: Visible(InsertContent(domain:, entries:, ..)), ..),
+    Model(popup: Visible(InsertContent(domain:, entries:, ..) as content), ..),
       UserSubmittedInsert
     -> {
-      let domain_trimmed = string.trim(domain)
-      let domain_error = case string.is_empty(domain_trimmed) {
-        True -> option.Some("must not be blank")
-        False -> option.None
+      let domain = string.trim(domain)
+      let domain_error = case string.is_empty(domain) {
+        True -> Some("must not be blank")
+        False -> None
       }
 
       let entries_result = validate_entries(entries)
 
       case domain_error, entries_result {
-        option.None, Ok(valid_entries) -> {
-          records.DomainGroup(name: domain_trimmed, records: valid_entries)
+        None, Ok(records) -> {
+          let content = InsertContent(..content, form_error: None)
+
+          records.DomainGroup(name: domain, records:)
           |> api_insert_domain(ApiInsertReturned)
-          |> pair.new(Model(..model, saving: True), _)
+          |> pair.new(Model(..model, saving: True, popup: Visible(content)), _)
         }
         _, _ -> {
-          let entries = case entries_result {
-            Ok(_) -> entries
-            Error(updated) -> updated
-          }
+          let entries = result.unwrap_error(entries_result, entries)
+          let content =
+            InsertContent(domain:, domain_error:, entries:, form_error: None)
 
-          let content = InsertContent(domain:, domain_error:, entries:)
           #(Model(..model, popup: Visible(content)), effect.none())
         }
       }
@@ -451,11 +468,12 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       let domains = list.append(model.domains, [group])
       #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
-    Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(group: _, result: Error(_))
+    Model(popup: Visible(InsertContent(..) as content), ..),
+      ApiInsertReturned(group: _, result: Error(error))
     -> {
-      let error = option.Some("Something went wrong inserting domain!")
-      #(Model(..model, saving: False, error:), effect.none())
+      let error = api_error(error)
+      let popup = Visible(InsertContent(..content, form_error: Some(error)))
+      #(Model(..model, saving: False, popup:), effect.none())
     }
     _, ApiInsertReturned(..) -> panic as "unreachable!"
 
@@ -463,7 +481,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       case list.find(model.domains, fn(group) { group.name == domain }) {
         Ok(group) -> {
           let entries = list.map(group.records, entry_to_draft)
-          let content = EditContent(domain:, entries:)
+          let content = EditContent(domain:, entries:, form_error: None)
           #(Model(..model, popup: Visible(content)), effect.none())
         }
         Error(Nil) -> panic as "domain not found"
@@ -471,15 +489,21 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
     }
     _, UserClickedEdit(_) -> panic as "unreachable!"
 
-    Model(popup: Visible(EditContent(domain:, entries:)), ..), UserSubmittedEdit
+    Model(
+      popup: Visible(EditContent(domain:, entries:, ..) as edit_content),
+      ..,
+    ),
+      UserSubmittedEdit
     -> {
       case validate_entries(entries) {
-        Ok(valid_entries) -> #(
-          Model(..model, saving: True),
-          api_put_domain(domain, valid_entries, ApiPutReturned),
-        )
+        Ok(valid_entries) -> {
+          let content = EditContent(..edit_content, form_error: None)
+          Model(..model, saving: True, popup: Visible(content))
+          |> pair.new(api_put_domain(domain, valid_entries, ApiPutReturned))
+        }
         Error(updated_entries) -> {
-          let content = EditContent(domain:, entries: updated_entries)
+          let content =
+            EditContent(domain:, entries: updated_entries, form_error: None)
           #(Model(..model, popup: Visible(content)), effect.none())
         }
       }
@@ -498,37 +522,38 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         })
       #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
-    Model(popup: Visible(EditContent(..)), ..),
-      ApiPutReturned(domain: _, entries: _, result: Error(_))
+    Model(popup: Visible(EditContent(..) as content), ..),
+      ApiPutReturned(domain: _, entries: _, result: Error(error))
     -> {
-      let error = option.Some("Something went wrong updating domain!")
-      #(Model(..model, saving: False, error:), effect.none())
+      let error = api_error(error)
+      let popup = Visible(EditContent(..content, form_error: Some(error)))
+      #(Model(..model, saving: False, popup:), effect.none())
     }
     _, ApiPutReturned(..) -> panic as "unreachable!"
 
     model, UserClickedDelete(domain) -> #(
-      Model(..model, deleting: option.Some(domain)),
+      Model(..model, deleting: Some(domain)),
       delete_cancel_after(domain, 3000),
     )
 
     Model(popup: Visible(content), ..), UserClickedDeleteDomainFromEdit(domain)
     -> #(
-      Model(..model, popup: Closing(content), deleting: option.Some(domain)),
+      Model(..model, popup: Closing(content), deleting: Some(domain)),
       delete_cancel_after(domain, 3000),
     )
     _, UserClickedDeleteDomainFromEdit(_) -> panic as "unreachable!"
 
     model, DeleteCancelled(domain) ->
       case model.deleting {
-        option.Some(pending) if pending == domain -> #(
-          Model(..model, deleting: option.None),
+        Some(pending) if pending == domain -> #(
+          Model(..model, deleting: None),
           effect.none(),
         )
         _ -> #(model, effect.none())
       }
 
     model, UserConfirmedDelete(domain) ->
-      Model(..model, saving: True, deleting: option.None)
+      Model(..model, saving: True, deleting: None)
       |> pair.new(api_delete_domain(domain, ApiDeleteReturned))
 
     model, ApiDeleteReturned(domain:, result: Ok(_)) -> {
@@ -536,11 +561,49 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         list.filter(model.domains, fn(group) { group.name != domain })
       #(Model(..model, domains:, saving: False), effect.none())
     }
-    model, ApiDeleteReturned(domain: _, result: Error(_)) -> {
-      let error = option.Some("Something went wrong deleting domain!")
+    model, ApiDeleteReturned(domain: _, result: Error(err)) -> {
+      let error = Some(api_error(err))
       #(Model(..model, saving: False, error:), effect.none())
     }
   }
+}
+
+fn view_field_error(error: Option(String)) -> Element(msg) {
+  case error {
+    Some(msg) ->
+      html.p([attribute.class("text-red-400 text-2xs xs:text-xs italic")], [
+        html.text(msg),
+      ])
+    None -> element.none()
+  }
+}
+
+fn input_border_state(error: Option(String)) -> String {
+  case error {
+    Some(_) -> "border-red-500"
+    None -> "border-elevated focus:border-accent"
+  }
+}
+
+fn view_entries_list(entries: List(EntryDraft)) -> Element(Message) {
+  html.div([attribute.class("flex-1 min-h-0 overflow-y-auto")], [
+    html.div(
+      [],
+      list.index_map(entries, fn(entry, index) {
+        view_entry_draft(index, entry, list.length(entries) > 1)
+      }),
+    ),
+    html.button(
+      [
+        attribute.type_("button"),
+        event.on_click(UserAddedEntry),
+        attribute.class(
+          "text-subtle hover:text-fg text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer mb-3 xs:mb-4 sm:mb-6 text-left",
+        ),
+      ],
+      [html.text("+ Add record")],
+    ),
+  ])
 }
 
 fn view(model: Model) -> Element(Message) {
@@ -560,7 +623,7 @@ fn view(model: Model) -> Element(Message) {
       ],
       [
         case model.error {
-          option.Some(message) ->
+          Some(message) ->
             html.p(
               [
                 attribute.class(
@@ -569,7 +632,7 @@ fn view(model: Model) -> Element(Message) {
               ],
               [html.text(message)],
             )
-          option.None -> element.none()
+          None -> element.none()
         },
         view_header(),
         case model.loading {
@@ -590,9 +653,9 @@ fn view(model: Model) -> Element(Message) {
                 ),
               ],
               list.map(model.domains, view_domain_card(
+                _,
                 model.deleting,
                 global_busy,
-                _,
               )),
             )
         },
@@ -682,10 +745,16 @@ fn view_popup(
         ],
         [
           case content {
-            InsertContent(domain:, domain_error:, entries:) ->
-              view_insert_popup(domain, domain_error, entries, saving)
-            EditContent(domain:, entries:) ->
-              view_edit_popup(domain, entries, saving)
+            InsertContent(domain:, domain_error:, entries:, form_error:) ->
+              view_insert_popup(
+                domain,
+                domain_error,
+                entries,
+                saving,
+                form_error,
+              )
+            EditContent(domain:, entries:, form_error:) ->
+              view_edit_popup(domain, entries, saving, form_error)
           },
         ],
       ),
@@ -695,9 +764,10 @@ fn view_popup(
 
 fn view_insert_popup(
   domain: String,
-  domain_error: option.Option(String),
+  domain_error: Option(String),
   entries: List(EntryDraft),
   saving: Bool,
+  form_error: Option(String),
 ) -> Element(Message) {
   html.div([attribute.class("flex flex-col flex-1 min-h-0")], [
     html.h2(
@@ -722,43 +792,29 @@ fn view_insert_popup(
         attribute.type_("text"),
         attribute.id("domain"),
         attribute.value(domain),
-        attribute.placeholder("proxmox.lan"),
+        attribute.placeholder("domain.lan"),
         event.on_input(UserChangedInsertDomain),
         attribute.class(
           "bg-elevated border "
-          <> case domain_error {
-            option.Some(_) -> "border-red-500"
-            option.None -> "border-elevated"
-          }
-          <> " rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 text-fg text-xs xs:text-sm sm:text-base outline-none focus:border-accent",
+          <> input_border_state(domain_error)
+          <> " rounded-lg px-2 py-1 xs:px-3 xs:py-2 sm:px-5 sm:py-3 text-fg text-xs xs:text-sm sm:text-base outline-none",
         ),
       ]),
-      case domain_error {
-        option.Some(err) ->
-          html.p([attribute.class("text-red-400 text-2xs xs:text-xs italic")], [
-            html.text(err),
-          ])
-        option.None -> element.none()
-      },
+      view_field_error(domain_error),
     ]),
-    html.div([attribute.class("flex-1 min-h-0 overflow-y-auto")], [
-      html.div(
-        [],
-        list.index_map(entries, fn(entry, i) {
-          view_entry_draft(i, entry, list.length(entries) > 1)
-        }),
-      ),
-      html.button(
-        [
-          attribute.type_("button"),
-          event.on_click(UserAddedEntry),
-          attribute.class(
-            "text-subtle hover:text-fg text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer mb-3 xs:mb-4 sm:mb-6 text-left",
-          ),
-        ],
-        [html.text("+ Add record")],
-      ),
-    ]),
+    view_entries_list(entries),
+    case form_error {
+      Some(error) ->
+        html.p(
+          [
+            attribute.class(
+              "mt-2 shrink-0 text-red-400 text-2xs xs:text-xs sm:text-sm italic",
+            ),
+          ],
+          [html.text(error)],
+        )
+      None -> element.none()
+    },
     html.button(
       [
         attribute.disabled(saving),
@@ -781,6 +837,7 @@ fn view_edit_popup(
   domain: String,
   entries: List(EntryDraft),
   saving: Bool,
+  form_error: Option(String),
 ) -> Element(Message) {
   html.div([attribute.class("flex flex-col flex-1 min-h-0")], [
     html.h2(
@@ -799,24 +856,19 @@ fn view_edit_popup(
       ],
       [html.text(domain)],
     ),
-    html.div([attribute.class("flex-1 min-h-0 overflow-y-auto")], [
-      html.div(
-        [],
-        list.index_map(entries, fn(entry, i) {
-          view_entry_draft(i, entry, list.length(entries) > 1)
-        }),
-      ),
-      html.button(
-        [
-          attribute.type_("button"),
-          event.on_click(UserAddedEntry),
-          attribute.class(
-            "text-subtle hover:text-fg text-2xs xs:text-xs sm:text-sm transition-colors cursor-pointer mb-3 xs:mb-4 sm:mb-6 text-left",
-          ),
-        ],
-        [html.text("+ Add record")],
-      ),
-    ]),
+    view_entries_list(entries),
+    case form_error {
+      Some(error) ->
+        html.p(
+          [
+            attribute.class(
+              "mt-2 shrink-0 text-red-400 text-2xs xs:text-xs sm:text-sm italic",
+            ),
+          ],
+          [html.text(error)],
+        )
+      None -> element.none()
+    },
     html.div(
       [attribute.class("flex justify-between items-center mt-2 shrink-0")],
       [
@@ -858,18 +910,12 @@ fn view_entry_draft(
 ) -> Element(Message) {
   let value_input_class =
     "bg-elevated border "
-    <> case draft.value_error {
-      option.Some(_) -> "border-red-500"
-      option.None -> "border-elevated focus:border-accent"
-    }
+    <> input_border_state(draft.value_error)
     <> " rounded-lg px-2 py-1 xs:px-3 xs:py-2 text-fg text-xs xs:text-sm outline-none w-full"
 
   let ttl_input_class =
     "bg-elevated border "
-    <> case draft.ttl_error {
-      option.Some(_) -> "border-red-500"
-      option.None -> "border-elevated focus:border-accent"
-    }
+    <> input_border_state(draft.ttl_error)
     <> " rounded-lg px-2 py-1 xs:px-2 xs:py-2 text-fg text-xs xs:text-sm outline-none w-full"
 
   html.div([attribute.class("mb-3 xs:mb-4")], [
@@ -902,13 +948,7 @@ fn view_entry_draft(
           event.on_input(UserChangedEntryValue(index, _)),
           attribute.class(value_input_class),
         ]),
-        case draft.value_error {
-          option.Some(err) ->
-            html.p([attribute.class("text-red-400 text-2xs italic")], [
-              html.text(err),
-            ])
-          option.None -> element.none()
-        },
+        view_field_error(draft.value_error),
       ]),
       html.div([attribute.class("w-14 xs:w-16 sm:w-20 flex flex-col gap-1")], [
         html.input([
@@ -919,13 +959,7 @@ fn view_entry_draft(
           event.on_input(UserChangedEntryTtl(index, _)),
           attribute.class(ttl_input_class),
         ]),
-        case draft.ttl_error {
-          option.Some(err) ->
-            html.p([attribute.class("text-red-400 text-2xs italic")], [
-              html.text(err),
-            ])
-          option.None -> element.none()
-        },
+        view_field_error(draft.ttl_error),
       ]),
     ]),
   ])
@@ -962,14 +996,14 @@ fn value_placeholder(type_: records.RecordType) -> String {
 }
 
 fn view_domain_card(
-  deleting: option.Option(String),
-  global_busy: Bool,
   group: records.DomainGroup,
+  deleting: Option(String),
+  global_busy: Bool,
 ) -> Element(Message) {
   let dimmed = case deleting {
-    option.Some(pending) if pending == group.name -> False
-    option.Some(_) -> True
-    option.None -> global_busy
+    Some(pending) if pending == group.name -> False
+    Some(_) -> True
+    None -> global_busy
   }
 
   let card_class =
@@ -980,37 +1014,42 @@ fn view_domain_card(
     }
 
   html.div([attribute.class(card_class)], [
-    html.h2(
-      [
-        attribute.class(
-          "font-semibold text-xs xs:text-sm sm:text-base md:text-lg mb-2 xs:mb-3 sm:mb-4 break-all",
-        ),
-      ],
-      [html.text(group.name)],
-    ),
     html.div(
       [
-        attribute.class("space-y-1 xs:space-y-1.5 sm:space-y-2 mb-3 sm:mb-5"),
+        attribute.class(
+          "flex items-start justify-between gap-2 mb-2 xs:mb-3 sm:mb-4",
+        ),
       ],
+      [
+        html.h2(
+          [
+            attribute.class(
+              "font-semibold text-xs xs:text-sm sm:text-base md:text-lg break-all",
+            ),
+          ],
+          [html.text(group.name)],
+        ),
+        html.div(
+          [attribute.class("flex items-center gap-1.5 xs:gap-2 shrink-0")],
+          [
+            html.button(
+              [
+                event.on_click(UserClickedEdit(group.name)),
+                attribute.class(
+                  "text-subtle hover:text-fg transition-colors cursor-pointer",
+                ),
+              ],
+              [view_pencil_icon()],
+            ),
+            view_card_delete_button(group.name, deleting),
+          ],
+        ),
+      ],
+    ),
+    html.div(
+      [attribute.class("space-y-1 xs:space-y-1.5 sm:space-y-2")],
       list.map(group.records, view_entry_row),
     ),
-    html.div([attribute.class("flex justify-end gap-2 xs:gap-3 sm:gap-4")], [
-      html.button(
-        [
-          event.on_click(UserClickedEdit(group.name)),
-          attribute.class(
-            "text-subtle hover:text-fg text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer "
-            <> case deleting {
-              option.Some(pending) if pending == group.name ->
-                "mr-[10px] xs:mr-[20.5px] sm:mr-[25.5px]"
-              _ -> ""
-            },
-          ),
-        ],
-        [html.text("Edit")],
-      ),
-      view_card_delete_button(group.name, deleting),
-    ]),
   ])
 }
 
@@ -1055,30 +1094,72 @@ fn view_entry_row(entry: records.RecordEntry) -> Element(Message) {
 
 fn view_card_delete_button(
   domain: String,
-  deleting: option.Option(String),
+  deleting: Option(String),
 ) -> Element(Message) {
   case deleting {
-    option.Some(pending) if pending == domain ->
+    Some(pending) if pending == domain ->
       html.button(
         [
           event.on_click(UserConfirmedDelete(domain)),
-          attribute.class(
-            "text-red-400 hover:text-red-300 text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer italic",
-          ),
+          attribute.class("text-red-300 transition-colors cursor-pointer"),
         ],
-        [html.text("Sure?")],
+        [view_trash_icon()],
       )
     _ ->
       html.button(
         [
           event.on_click(UserClickedDelete(domain)),
           attribute.class(
-            "text-subtle hover:text-red-400 text-2xs xs:text-sm sm:text-base transition-colors cursor-pointer",
+            "text-subtle hover:text-red-400 transition-colors cursor-pointer",
           ),
         ],
-        [html.text("Delete")],
+        [view_trash_icon()],
       )
   }
+}
+
+fn view_pencil_icon() -> Element(msg) {
+  svg.svg(
+    [
+      attribute.attribute("xmlns", "http://www.w3.org/2000/svg"),
+      attribute.attribute("fill", "currentColor"),
+      attribute.attribute("viewBox", "0 0 16 16"),
+      attribute.class("size-3 xs:size-3.5 sm:size-4"),
+    ],
+    [
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z",
+        ),
+      ]),
+    ],
+  )
+}
+
+fn view_trash_icon() -> Element(msg) {
+  svg.svg(
+    [
+      attribute.attribute("xmlns", "http://www.w3.org/2000/svg"),
+      attribute.attribute("fill", "currentColor"),
+      attribute.attribute("viewBox", "0 0 16 16"),
+      attribute.class("size-3 xs:size-3.5 sm:size-4"),
+    ],
+    [
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z",
+        ),
+      ]),
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z",
+        ),
+      ]),
+    ],
+  )
 }
 
 fn view_add_icon() -> Element(msg) {

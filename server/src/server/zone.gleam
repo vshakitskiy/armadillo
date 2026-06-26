@@ -43,6 +43,7 @@ pub type Message {
 
 pub type ZoneError {
   Conflict
+  CnameConflict
   NotFound
   WriteFailure(simplifile.FileError)
 }
@@ -241,7 +242,7 @@ fn apply_domain_put(
 
   case has_cname && has_address {
     True -> {
-      process.send(reply_to, Error(Conflict))
+      process.send(reply_to, Error(CnameConflict))
       actor.continue(zone)
     }
     False -> {

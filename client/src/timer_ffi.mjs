@@ -1,3 +1,3 @@
-export function set_timeout(callback, ms) {
+export function set_timeout(ms, callback) {
   setTimeout(callback, ms);
 }

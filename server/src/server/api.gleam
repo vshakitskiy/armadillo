@@ -57,7 +57,10 @@ fn handler(
   request: request.Request(wisp.Connection),
   context: Context,
 ) -> response.Response(wisp.Body) {
+  let request = wisp.method_override(request)
   use <- wisp.rescue_crashes
+  use request <- wisp.handle_head(request)
+  use request <- wisp.csrf_known_header_protection(request)
 
   case request.method, wisp.path_segments(request) {
     http.Get, ["api", "domains"] -> {
@@ -92,7 +95,12 @@ fn handler(
             Error(zone.Conflict) ->
               wisp.response(409)
               |> wisp.string_body("Domain already exists")
-            Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+            Error(zone.CnameConflict) ->
+              wisp.response(422)
+              |> wisp.string_body("CNAME cannot coexist with A or AAAA records")
+            Error(zone.WriteFailure(_)) ->
+              wisp.response(503)
+              |> wisp.string_body("Failed to write zone file")
             Error(zone.NotFound) -> panic as "unreachable!"
           }
         }
@@ -113,10 +121,13 @@ fn handler(
               })
               wisp.no_content()
             }
-            Error(zone.Conflict) ->
-              wisp.response(409)
+            Error(zone.CnameConflict) ->
+              wisp.response(422)
               |> wisp.string_body("CNAME cannot coexist with A or AAAA records")
-            Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+            Error(zone.WriteFailure(_)) ->
+              wisp.response(503)
+              |> wisp.string_body("Failed to write zone file")
+            Error(zone.Conflict) -> panic as "unreachable!"
             Error(zone.NotFound) -> panic as "unreachable!"
           }
         }
@@ -130,7 +141,9 @@ fn handler(
           cache.delete_domain(name)
           wisp.no_content()
         }
-        Error(zone.WriteFailure(_)) -> wisp.internal_server_error()
+        Error(zone.WriteFailure(_)) ->
+          wisp.response(503)
+          |> wisp.string_body("Failed to write zone file")
         Error(_) -> panic as "unreachable!"
       }
     }
