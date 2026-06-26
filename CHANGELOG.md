@@ -1,4 +1,4 @@
-## Unreleased
+## v2.0.0 - 26.06.2026
 
 - Add id checking of the DNS packets, preventing cache poisoning vulnerability
 - Allow different record types, for now its A, AAAA and CNAME

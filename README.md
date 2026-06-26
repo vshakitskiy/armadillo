@@ -14,8 +14,9 @@ matching record exists, it responds immediately with the configured IP. If no
 record matches, the query is forwarded to a configurable upstream resolver, the 
 response is cached by TTL, and returned to the client.
 
-Local records are stored in SQLite and loaded into ETS on startup. All query 
-resolution at runtime goes through ETS only.
+Local records are stored in a DNS zone file and loaded into ETS on startup. All 
+query resolution at runtime goes through ETS only, the zone file is never read 
+during query handling.
 
 ## Container image
 
@@ -25,10 +26,14 @@ Available at `ghcr.io/vshakitskiy/armadillo:latest`.
 |---|---|---|
 | `DNS_PORT` | `53` | Port the DNS server listens on |
 | `DNS_UPSTREAM` | `8.8.8.8` | Upstream resolver for unknown domains |
+| `DNS_TTL` | `300` | Default TTL for zone records in seconds |
+| `DNS_SOA_MINIMUM` | `3600` | SOA minimum TTL for negative caching in seconds |
 | `API_PORT` | `3000` | Port for the web UI and REST API |
-| `API_SECRET_KEY_BASE` | random key | Secret used to sign cookies |
+| `API_SECRET_KEY_BASE` | random key | Secret used to sign session cookies |
+| `ZONE_FILE` | `/data/local.zone` | Path to the DNS zone file |
 
-Mount a volume to `/data` to keep records persist across restarts.
+Mount a volume to `/data` to persist the zone file across restarts. The zone
+file is created automatically if it does not exist.
 
 ## Deploying on Linux with Podman and Caddy
 
@@ -67,8 +72,8 @@ http://192.168.1.x {
 
 4. Point your router at the server's IP as the DNS resolver.
 
-5. Open the UI at `http://192.168.1.x`, add a DNS record pointing your chosen 
-domain, for exmaple `dns.lan`, to the server IP.
+5. Open the UI at `http://192.168.1.x`, add a DNS record pointing your chosen
+domain, for example `dns.lan`, to the server IP.
 
 6. Update the Caddyfile to use the domain:
 ```
