@@ -10,8 +10,8 @@ services:
     ports: 
       - 53:53/udp
     environment:
-      DNS_UPSTREAM: 1.1.1.1
-      API_SECRET_KEY_BASE: "SET_THIS_FROM_DOT_ENV"
+      DNS_UPSTREAM: ${DNS_UPSTREAM}
+      API_SECRET_KEY_BASE: ${API_SECRET_KEY_BASE}
     volumes:
       - ./data:/data
 

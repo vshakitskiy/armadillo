@@ -64,16 +64,24 @@ curl -o ~/armadillo/config/Caddyfile \
 
 Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/docker-compose/config/Caddyfile).
 
-### 6. Set the secret
+### 6. Create the environment file
 
-Open `~/armadillo/docker-compose.yml` and replace `SET_THIS_FROM_DOT_ENV` with a 
-strong secret. To generate one:
+```sh
+curl -o ~/armadillo/.env \
+  https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/docker-compose/example.env
+```
+
+Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/docker-compose/example.env).
+
+Open `~/armadillo/.env` and replace `your_secret_here` with a strong secret. To 
+generate one:
 
 ```sh
 openssl rand -hex 32
 ```
 
-Adjust any other environment variables as needed.
+Docker Compose automatically loads `.env` from the project directory. Secrets 
+stay out of the Compose file.
 
 ### 7. Start the services
 
@@ -84,7 +92,7 @@ cd ~/armadillo && docker compose up -d
 Verify both containers are running:
 
 ```sh
-docker compose ps
+docker ps
 ```
 
 ### 8. Point your router at the server
