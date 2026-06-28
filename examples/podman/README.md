@@ -43,7 +43,9 @@ Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistre
 
 ### 3. Add a DNS record for the web UI
 
-cat "dns.lan 300 IN A <server-ip>" >> ~/armadillo/data/local.zone
+```sh
+echo "dns.lan 300 IN A <server-ip>" >> ~/armadillo/data/local.zone
+```
 
 Replace `<server-ip>` with the server's local IP address.
 
@@ -58,7 +60,11 @@ Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistre
 
 ### 5. Configure the container file
 
-Open `~/armadillo/armadillo.container` and replace `<user>` with your username and `<secret>` with a strong secret. To generate one:
+Open `~/armadillo/armadillo.container` and replace:
+
+- `<user>` with your username
+- `<uid>` with your user ID (`id -u`)
+- `<secret>` with a strong secret — to generate one:
 
 ```sh
 openssl rand -hex 32

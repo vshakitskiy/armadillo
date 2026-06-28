@@ -8,6 +8,7 @@ Image=ghcr.io/vshakitskiy/armadillo:v2.0.0-rc1
 PublishPort=53:53/udp
 PublishPort=3000:3000
 Volume=/home/<user>/armadillo/data:/data
+User=<uid>:<uid>
 Environment=DNS_UPSTREAM=1.1.1.1
 Environment=API_SECRET_KEY_BASE=<secret>
 
