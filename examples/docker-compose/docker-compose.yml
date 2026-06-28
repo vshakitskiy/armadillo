@@ -1,0 +1,29 @@
+volumes:
+  caddy_data:
+  caddy_config:
+
+services:
+  armadillo:
+    container_name: armadillo
+    image: ghcr.io/vshakitskiy/armadillo:v2.0.0-rc.1
+    restart: unless-stopped
+    ports: 
+      - 53:53/udp
+    environment:
+      DNS_UPSTREAM: 1.1.1.1
+      API_SECRET_KEY_BASE: "SET_THIS_FROM_DOT_ENV"
+    volumes:
+      - ./data:/data
+
+  caddy:
+    container_name: caddy
+    image: caddy:latest
+    restart: unless-stopped
+    ports: 
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config 
+      - ./config:/etc/caddy

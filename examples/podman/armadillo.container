@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=ghcr.io/vshakitskiy/armadillo:latest 
+Image=ghcr.io/vshakitskiy/armadillo:v2.0.0-rc1 
 PublishPort=53:53/udp
 PublishPort=3000:3000
 Volume=/home/<user>/armadillo/data:/data

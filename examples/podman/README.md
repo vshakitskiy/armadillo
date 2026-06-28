@@ -36,10 +36,10 @@ mkdir -p ~/armadillo/data
 
 ```sh
 curl -o ~/armadillo/data/local.zone \
-  https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/podman/local.zone
+  https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/podman/data/local.zone
 ```
 
-Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/podman/local.zone).
+Or [see raw file](https://raw.githubusercontent.com/vshakitskiy/armadillo/mistress/examples/podman/data/local.zone).
 
 ### 3. Add a DNS record for the web UI
 

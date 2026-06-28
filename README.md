@@ -41,6 +41,8 @@ Deployment guides can be found in the [`examples/`](examples/) directory.
 
 - [**Podman**](examples/podman/) — systemd service via Podman Quadlet with Caddy
 as a reverse proxy.
+- [**Docker Compose**](examples/docker-compose/) — multi-container application
+with Caddy as a reverse proxy.
 
 ## Domain naming
 

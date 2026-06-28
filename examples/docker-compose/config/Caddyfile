@@ -1,0 +1,4 @@
+http://dns.lan {
+    rewrite / /index.html
+    reverse_proxy armadillo:3000
+}
