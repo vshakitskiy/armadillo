@@ -2,7 +2,7 @@
 
 A self-hosted DNS server for homelab use, written in Gleam.
 
-[![armadillo showcase](https://github.com/user-attachments/assets/7361e6b2-c761-4eea-82d8-22f95c104324)](https://github.com/user-attachments/assets/7361e6b2-c761-4eea-82d8-22f95c104324)
+[![armadillo showcase](https://github.com/user-attachments/assets/5fade8b4-74f3-43a4-a5f5-911c17705600)](https://github.com/user-attachments/assets/5fade8b4-74f3-43a4-a5f5-911c17705600)
 
 Configure it once on your router as the DNS resolver and every device on the 
 network resolves your local domains automatically.
