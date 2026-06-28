@@ -35,56 +35,12 @@ Available at `ghcr.io/vshakitskiy/armadillo:latest`.
 Mount a volume to `/data` to persist the zone file across restarts. The zone
 file is created automatically if it does not exist.
 
-## Deploying on Linux with Podman and Caddy
+## Deployment guides
 
-This is a simple starting setup for a home local network. It is not intended as 
-a reference for how deployments should be done in general.
+Deployment guides can be found in the [`examples/`](examples/) directory.
 
-1. Allow binding to port 53 without root:
-```sh
-echo "net.ipv4.ip_unprivileged_port_start=53" | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-```
-
-2. Start the container and generate a systemd service:
-```sh
-podman run -d --name armadillo \
-  -e API_SECRET_KEY_BASE=your_secret \
-  -e DNS_UPSTREAM=1.1.1.1 \
-  -v armadillo-data:/data \
-  -p 53:53/udp \
-  -p 127.0.0.1:3000:3000 \
-  ghcr.io/vshakitskiy/armadillo:latest
-
-podman generate systemd --new --name armadillo | sudo tee /etc/systemd/system/armadillo.service
-sudo systemctl daemon-reload
-podman rm -f armadillo
-sudo systemctl enable --now armadillo
-```
-
-3. Configure Caddy to serve the UI by the server's IP for now:
-```
-http://192.168.1.x {
-    rewrite / /index.html
-    reverse_proxy localhost:3000
-}
-```
-
-4. Point your router at the server's IP as the DNS resolver.
-
-5. Open the UI at `http://192.168.1.x`, add a DNS record pointing your chosen
-domain, for example `dns.lan`, to the server IP.
-
-6. Update the Caddyfile to use the domain:
-```
-http://dns.lan {
-    rewrite / /index.html
-    reverse_proxy localhost:3000
-}
-```
-
-From this point the UI is accessible at `http://dns.lan` from any device on the 
-network.
+- [**Podman**](examples/podman/) — systemd service via Podman Quadlet with Caddy
+as a reverse proxy.
 
 ## Domain naming
 

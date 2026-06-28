@@ -1,0 +1,18 @@
+[Unit]
+Description=Armadillo DNS Resolver
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/vshakitskiy/armadillo:latest 
+PublishPort=53:53/udp
+PublishPort=3000:3000
+Volume=/home/<user>/armadillo/data:/data
+Environment=DNS_UPSTREAM=1.1.1.1
+Environment=API_SECRET_KEY_BASE=<secret>
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

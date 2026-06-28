@@ -11,7 +11,6 @@ WORKDIR /app/client
 RUN gleam run -m lustre/dev build
 
 FROM erlang:${ERLANG_VERSION}-alpine AS server-build
-RUN apk add --no-cache build-base
 COPY --from=gleam /bin/gleam /bin/gleam
 COPY shared/ /app/shared/
 COPY server/ /app/server/
@@ -22,18 +21,14 @@ RUN gleam export erlang-shipment
 FROM erlang:${ERLANG_VERSION}-alpine
 RUN apk add --no-cache libcap \
     && find /usr/local/lib/erlang -name beam.smp -exec setcap cap_net_bind_service=+ep {} \; \
-    && addgroup --system armadillo \
-    && adduser --system armadillo -G armadillo \
-    && mkdir -p /data \
-    && chown armadillo:armadillo /data
-COPY --chown=armadillo:armadillo --from=server-build /app/server/build/erlang-shipment /app
+    && mkdir -p /data
+COPY --from=server-build /app/server/build/erlang-shipment /app
 ENV DNS_PORT=53
 ENV DNS_UPSTREAM=8.8.8.8
 ENV API_PORT=3000
 ENV ZONE_FILE=/data/local.zone
 VOLUME /data
 WORKDIR /app
-USER armadillo
 EXPOSE 53/udp
 EXPOSE 3000/tcp
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -1,0 +1,3 @@
+; Managed by armadillo - do not edit
+$TTL 300
+@ IN SOA ns.armadillo. hostmaster.armadillo. 2026062600 3600 900 604800 3600
