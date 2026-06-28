@@ -5,7 +5,7 @@ volumes:
 services:
   armadillo:
     container_name: armadillo
-    image: ghcr.io/vshakitskiy/armadillo:v2.0.0-rc.1
+    image: ghcr.io/vshakitskiy/armadillo:v2.0.0
     restart: unless-stopped
     ports: 
       - 53:53/udp

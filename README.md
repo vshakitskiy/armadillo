@@ -20,7 +20,7 @@ during query handling.
 
 ## Container image
 
-Available at `ghcr.io/vshakitskiy/armadillo:latest`.
+Available at `ghcr.io/vshakitskiy/armadillo:v2.0.0`.
 
 | Variable | Default | Description |
 |---|---|---|
