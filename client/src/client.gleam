@@ -1,3 +1,5 @@
+import armadillo/shared/ip
+import armadillo/shared/records
 import gleam/dynamic/decode
 import gleam/function
 import gleam/http/response
@@ -16,8 +18,6 @@ import lustre/element/html
 import lustre/element/svg
 import lustre/event
 import rsvp
-import shared/ip
-import shared/records
 
 pub fn main() {
   let app = lustre.application(init, update, view)

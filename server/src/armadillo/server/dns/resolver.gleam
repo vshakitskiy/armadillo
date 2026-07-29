@@ -1,3 +1,8 @@
+import armadillo/server/cache
+import armadillo/server/dns/protocol as dns
+import armadillo/server/dns/udp
+import armadillo/shared/ip
+import armadillo/shared/records
 import gleam/erlang/process
 import gleam/list
 import gleam/option
@@ -6,11 +11,6 @@ import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
 import gleam/string
 import logging
-import server/cache
-import server/dns/protocol as dns
-import server/dns/udp
-import shared/ip
-import shared/records
 
 pub type Resolve {
   Resolve(peer: udp.Peer, query: dns.Query, upstream: ip.Address)

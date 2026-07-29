@@ -1,3 +1,7 @@
+import armadillo/server/dns/protocol as dns
+import armadillo/server/env
+import armadillo/shared/ip
+import armadillo/shared/records
 import filepath
 import gleam/bool
 import gleam/erlang/process
@@ -9,10 +13,6 @@ import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import logging
-import server/dns/protocol as dns
-import server/env
-import shared/ip
-import shared/records
 import simplifile
 
 pub type Message {

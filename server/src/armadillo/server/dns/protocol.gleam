@@ -1,11 +1,11 @@
+import armadillo/shared/ip
+import armadillo/shared/records
 import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
-import shared/ip
-import shared/records
 
 pub type DecodeError {
   NotEnough

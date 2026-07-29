@@ -1,3 +1,4 @@
+import armadillo/shared/ip
 import exception
 import gleam/dynamic
 import gleam/erlang/atom
@@ -7,7 +8,6 @@ import gleam/option
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
-import shared/ip
 
 pub type Socket
 

@@ -1,3 +1,8 @@
+import armadillo/server/cache
+import armadillo/server/env
+import armadillo/server/zone
+import armadillo/shared/records
+import armadillo/wisp/wisp_ewe
 import envoy
 import ewe
 import gleam/dict
@@ -11,12 +16,7 @@ import gleam/json
 import gleam/list
 import gleam/result
 import logging
-import server/cache
-import server/env
-import server/zone
-import shared/records
 import wisp
-import wisp/wisp_ewe
 
 pub fn supervised(zone: process.Subject(zone.Message)) {
   let secret_key_base =

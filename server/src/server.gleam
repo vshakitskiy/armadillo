@@ -1,3 +1,8 @@
+import armadillo/server/api
+import armadillo/server/cache
+import armadillo/server/dns
+import armadillo/server/env
+import armadillo/server/zone
 import envoy
 import gleam/erlang/application
 import gleam/erlang/process
@@ -6,11 +11,6 @@ import gleam/io
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/result
-import server/api
-import server/cache
-import server/dns
-import server/env
-import server/zone
 import wisp
 
 const name = "  __   ____  _  _   __   ____  __  __    __     __  

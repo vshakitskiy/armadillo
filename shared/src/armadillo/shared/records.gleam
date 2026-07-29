@@ -1,6 +1,6 @@
+import armadillo/shared/ip
 import gleam/dynamic/decode
 import gleam/json
-import shared/ip
 
 pub type Record {
   ARecord(name: String, ttl: Int, ip: ip.Ipv4)
