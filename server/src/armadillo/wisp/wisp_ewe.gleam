@@ -1,15 +1,13 @@
-//// An Ewe adapter for Wisp.
-//// See: https://github.com/gleam-wisp/wisp/tree/main/wisp_ewe
-
-import ewe.{type Request as EweRequest, type Response as EweResponse}
+import ewe
 import exception
 import gleam/http/request
 import gleam/http/response
 import gleam/option
-import gleam/result
 import gleam/string
-import wisp.{type Request as WispRequest, type Response as WispResponse}
+import wisp
 import wisp/internal
+
+const max_body_size = 8_000_000
 
 /// Convert a Wisp request handler into a function that can be run with the Ewe
 /// web server.
@@ -19,13 +17,14 @@ import wisp/internal
 /// ```gleam
 /// pub fn main() {
 ///   let secret_key_base = "..."
+///
 ///   let assert Ok(_) =
 ///     handle_request
 ///     |> wisp_ewe.handler(secret_key_base)
-///     |> ewe.new
-///     |> ewe.listening(port: 8000)
+///     |> ewe.new(handler: _)
+///     |> ewe.listening(on: 8000)
 ///     |> ewe.start
-/// 
+///
 ///   process.sleep_forever()
 /// }
 /// ```
@@ -36,66 +35,59 @@ import wisp/internal
 /// value will likely be able to hack your application.
 ///
 pub fn handler(
-  handler: fn(WispRequest) -> WispResponse,
+  handler: fn(wisp.Request) -> wisp.Response,
   secret_key_base: String,
-) -> fn(EweRequest) -> EweResponse {
-  fn(req) {
-    let conn = internal.make_connection(ewe_body_reader(req), secret_key_base)
-    let req = request.set_body(req, conn)
+) -> fn(request.Request(ewe.Connection)) -> response.Response(ewe.Body) {
+  fn(req: request.Request(ewe.Connection)) {
+    let connection = req.body
+    let wisp_req =
+      internal.make_connection(ewe_body_reader(req), secret_key_base)
+      |> request.set_body(req, _)
 
     use <- exception.defer(fn() {
-      let assert Ok(_) = wisp.delete_temporary_files(req)
+      let assert Ok(_deleted_files) = wisp.delete_temporary_files(wisp_req)
     })
 
-    handler(req)
-    |> ewe_response
+    handler(wisp_req)
+    |> ewe_response(connection)
   }
 }
 
-fn ewe_body_reader(req: EweRequest) -> internal.Reader {
-  case ewe.stream_body(req) {
-    Ok(consumer) -> wrap_ewe_consumer(consumer)
-    Error(_) -> fn(_) { Ok(internal.ReadingFinished) }
-  }
-}
-
-fn wrap_ewe_consumer(consumer: ewe.Consumer) -> internal.Reader {
-  fn(size) { wrap_ewe_chunk(consumer(size)) }
-}
-
-fn wrap_ewe_chunk(
-  chunk: Result(ewe.Stream, ewe.BodyError),
-) -> Result(internal.Read, Nil) {
-  result.replace_error(chunk, Nil)
-  |> result.map(fn(chunk) {
-    case chunk {
-      ewe.Consumed(data:, next: consumer) ->
-        internal.Chunk(data, wrap_ewe_consumer(consumer))
-      ewe.Done -> internal.ReadingFinished
+fn ewe_body_reader(req: request.Request(ewe.Connection)) -> internal.Reader {
+  fn(size) {
+    case ewe.read_body_chunk(req, max_chunk_bytes: size, limit: max_body_size) {
+      Ok(ewe.Chunk(data:, request:)) ->
+        Ok(internal.Chunk(data, ewe_body_reader(request)))
+      Ok(ewe.Done(..)) -> Ok(internal.ReadingFinished)
+      Error(_body_error) -> Error(Nil)
     }
-  })
+  }
 }
 
-fn ewe_response(resp: WispResponse) -> EweResponse {
+fn ewe_response(
+  resp: response.Response(wisp.Body),
+  connection: ewe.Connection,
+) -> response.Response(ewe.Body) {
   case resp.body {
-    wisp.Text(text) -> response.set_body(resp, ewe.TextData(text))
-    wisp.Bytes(bytes) -> response.set_body(resp, ewe.BytesData(bytes))
+    wisp.Text(text) -> response.set_body(resp, ewe.Text(text))
+    wisp.Bytes(bytes) -> response.set_body(resp, ewe.Bytes(bytes))
     wisp.File(path:, offset:, limit:) ->
-      ewe_send_file(resp, path, offset, limit)
+      ewe_send_file(resp, connection, path, offset, limit)
   }
 }
 
 fn ewe_send_file(
-  resp: WispResponse,
+  resp: response.Response(wisp.Body),
+  connection: ewe.Connection,
   path: String,
   offset: Int,
   limit: option.Option(Int),
-) -> EweResponse {
-  case ewe.file(path, offset: option.Some(offset), limit:) {
+) -> response.Response(ewe.Body) {
+  case ewe.file(connection, path, offset: option.Some(offset), limit:) {
     Ok(file) -> response.set_body(resp, file)
     Error(error) -> {
       string.inspect(error)
-      |> wisp.log_error()
+      |> wisp.log_error
 
       response.new(500) |> response.set_body(ewe.Empty)
     }

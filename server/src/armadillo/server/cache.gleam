@@ -10,16 +10,20 @@ pub type CacheError {
   Expired
 }
 
-pub fn init(records: List(records.Record)) -> Nil {
-  new()
-  list.each(records, set)
-}
+@external(erlang, "cache_ffi", "new")
+pub fn init() -> Nil
+
+@external(erlang, "cache_ffi", "replace_local")
+pub fn replace_local(records: List(records.Record)) -> Nil
+
+@external(erlang, "cache_ffi", "replace_domain")
+pub fn replace_domain(name: String, records: List(records.Record)) -> Nil
 
 type Cleanup {
   Cleanup
 }
 
-pub fn worker() {
+pub fn worker() -> supervision.ChildSpecification(Nil) {
   supervision.worker(fn() {
     actor.new_with_initialiser(1000, fn(self) {
       process.send_after(self, 60_000, Cleanup)
@@ -37,34 +41,24 @@ pub fn worker() {
   })
 }
 
-@external(erlang, "cache_ffi", "new")
-fn new() -> Nil
-
-pub fn set(record: records.Record) -> Nil {
-  do_insert(record, -1)
+pub fn store_response(response: dns.Response) -> Nil {
+  case response.rcode == dns.NoError && !response.truncated {
+    True ->
+      response.answers
+      |> list.filter_map(dns.resource_record_to_record)
+      |> replace_upstream
+    False -> Nil
+  }
 }
 
-pub fn set_with_ttl(record: records.Record, ttl: Int) -> Nil {
-  do_insert_with_ttl(record, ttl)
-}
-
-@external(erlang, "cache_ffi", "insert")
-fn do_insert(record: records.Record, expiry: Int) -> Nil
-
-@external(erlang, "cache_ffi", "insert_with_ttl")
-fn do_insert_with_ttl(record: records.Record, ttl: Int) -> Nil
+@external(erlang, "cache_ffi", "replace_upstream")
+fn replace_upstream(records: List(records.Record)) -> Nil
 
 @external(erlang, "cache_ffi", "lookup")
 pub fn get(
   name: String,
   type_: dns.Type,
 ) -> Result(List(records.Record), CacheError)
-
-@external(erlang, "cache_ffi", "delete")
-pub fn delete(name: String, type_: dns.Type) -> Nil
-
-@external(erlang, "cache_ffi", "delete_domain")
-pub fn delete_domain(name: String) -> Nil
 
 @external(erlang, "cache_ffi", "cleanup_expired")
 fn cleanup_expired() -> Nil

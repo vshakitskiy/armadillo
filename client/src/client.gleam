@@ -19,9 +19,9 @@ import lustre/element/svg
 import lustre/event
 import rsvp
 
-pub fn main() {
+pub fn main() -> Nil {
   let app = lustre.application(init, update, view)
-  let assert Ok(_) = lustre.start(app, "#app", Nil)
+  let assert Ok(_app) = lustre.start(app, "#app", Nil)
   Nil
 }
 
@@ -210,16 +210,17 @@ fn validate_entry(
         Error(Nil) -> Error("must be a valid IPv6 address")
       }
     records.Cname ->
-      case string.is_empty(string.trim(draft.value)) {
-        True -> Error("must not be blank")
-        False -> Ok(records.CnameEntry(ttl: 0, target: draft.value))
-      }
+      records.validate_name(draft.value)
+      |> result.map_error(records.describe_name_error)
+      |> result.map(fn(_valid) {
+        records.CnameEntry(ttl: 0, target: draft.value)
+      })
   }
 
   let ttl_result = case int.parse(draft.ttl) {
     Ok(n) if n > 0 && n <= 86_400 -> Ok(n)
     Ok(n) if n > 86_400 -> Error("must be ≤ 86400 (1 day)")
-    Ok(_) -> Error("must be a positive number")
+    Ok(_ttl) -> Error("must be a positive number")
     Error(Nil) -> Error("must be a number")
   }
 
@@ -228,16 +229,16 @@ fn validate_entry(
     Ok(records.AaaaEntry(ip:, ..)), Ok(ttl) -> Ok(records.AaaaEntry(ttl:, ip:))
     Ok(records.CnameEntry(target:, ..)), Ok(ttl) ->
       Ok(records.CnameEntry(ttl:, target:))
-    _, _ ->
+    _value_result, _ttl_result ->
       EntryDraft(
         ..draft,
         value_error: case value_result {
           Error(msg) -> Some(msg)
-          Ok(_) -> None
+          Ok(_value) -> None
         },
         ttl_error: case ttl_result {
           Error(msg) -> Some(msg)
-          Ok(_) -> None
+          Ok(_value) -> None
         },
       )
       |> Error
@@ -257,7 +258,7 @@ fn validate_entries(
       |> list.map(fn(pair) {
         let #(draft, result) = pair
         case result {
-          Ok(_) -> draft
+          Ok(_entry) -> draft
           Error(with_errors) -> with_errors
         }
       })
@@ -289,7 +290,10 @@ fn api_error(err: rsvp.Error(String)) -> String {
         True -> "Internal server error"
       }
     rsvp.NetworkError -> "Check your connection"
-    _ -> "Something went wrong"
+    rsvp.BadBody
+    | rsvp.BadUrl(_url)
+    | rsvp.JsonError(_decode_error)
+    | rsvp.UnhandledResponse(_response) -> "Something went wrong"
   }
 }
 
@@ -304,7 +308,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       #(Model(..model, loading: False, error: Some(error)), effect.none())
     }
 
-    Model(popup: Hidden, ..), UserClosedPopup -> panic as "unreachable!"
+    Model(popup: Hidden, ..), UserClosedPopup -> #(model, effect.none())
     Model(popup: Visible(content), saving: False, ..), UserClosedPopup -> #(
       Model(..model, popup: Closing(content)),
       effect.none(),
@@ -316,9 +320,9 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       Model(..model, popup: Hidden),
       effect.none(),
     )
-    _, PopupAnimationEnded -> #(model, effect.none())
+    _model, PopupAnimationEnded -> #(model, effect.none())
 
-    Model(popup: Hidden, ..), UserClickedInsert -> {
+    Model(popup: Hidden, saving: False, ..), UserClickedInsert -> {
       let content =
         InsertContent(
           domain: "",
@@ -328,7 +332,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         )
       #(Model(..model, popup: Visible(content)), effect.none())
     }
-    _, UserClickedInsert -> panic as "unreachable!"
+    _model, UserClickedInsert -> #(model, effect.none())
 
     Model(popup: Visible(InsertContent(entries:, ..)), ..),
       UserChangedInsertDomain(domain)
@@ -337,7 +341,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         InsertContent(domain:, domain_error: None, entries:, form_error: None)
       #(Model(..model, popup: Visible(content)), effect.none())
     }
-    _, UserChangedInsertDomain(_) -> panic as "unreachable!"
+    _model, UserChangedInsertDomain(_domain) -> #(model, effect.none())
 
     model, UserChangedEntryType(index, type_) -> {
       let popup = case model.popup {
@@ -355,7 +359,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           }
           Visible(EditContent(..content, entries:))
         }
-        _ -> panic as "unreachable!"
+        Hidden | Closing(..) -> model.popup
       }
       #(Model(..model, popup:), effect.none())
     }
@@ -376,7 +380,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           }
           Visible(EditContent(..content, entries:))
         }
-        _ -> panic as "unreachable!"
+        Hidden | Closing(..) -> model.popup
       }
       #(Model(..model, popup:), effect.none())
     }
@@ -397,7 +401,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           }
           Visible(EditContent(..content, entries:))
         }
-        _ -> panic as "unreachable!"
+        Hidden | Closing(..) -> model.popup
       }
       #(Model(..model, popup:), effect.none())
     }
@@ -412,7 +416,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           let entries = list.append(entries, default_entries())
           Visible(EditContent(..content, entries:))
         }
-        _ -> panic as "unreachable!"
+        Hidden | Closing(..) -> model.popup
       }
       #(Model(..model, popup:), effect.none())
     }
@@ -427,18 +431,22 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           let lists = [list.take(entries, index), list.drop(entries, index + 1)]
           Visible(EditContent(..content, entries: list.flatten(lists)))
         }
-        _ -> panic as "unreachable!"
+        Hidden | Closing(..) -> model.popup
       }
       #(Model(..model, popup:), effect.none())
     }
 
-    Model(popup: Visible(InsertContent(domain:, entries:, ..) as content), ..),
+    Model(
+      popup: Visible(InsertContent(domain:, entries:, ..) as content),
+      saving: False,
+      ..,
+    ),
       UserSubmittedInsert
     -> {
       let domain = string.trim(domain)
-      let domain_error = case string.is_empty(domain) {
-        True -> Some("must not be blank")
-        False -> None
+      let domain_error = case records.validate_name(domain) {
+        Ok(Nil) -> None
+        Error(reason) -> Some(records.describe_name_error(reason))
       }
 
       let entries_result = validate_entries(entries)
@@ -451,7 +459,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           |> api_insert_domain(ApiInsertReturned)
           |> pair.new(Model(..model, saving: True, popup: Visible(content)), _)
         }
-        _, _ -> {
+        _domain_error, _entries_result -> {
           let entries = result.unwrap_error(entries_result, entries)
           let content =
             InsertContent(domain:, domain_error:, entries:, form_error: None)
@@ -460,37 +468,38 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         }
       }
     }
-    _, UserSubmittedInsert -> panic as "unreachable!"
+    _model, UserSubmittedInsert -> #(model, effect.none())
 
     Model(popup: Visible(InsertContent(..)), ..),
-      ApiInsertReturned(group:, result: Ok(_))
+      ApiInsertReturned(group:, result: Ok(_response))
     -> {
       let domains = list.append(model.domains, [group])
       #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
     Model(popup: Visible(InsertContent(..) as content), ..),
-      ApiInsertReturned(group: _, result: Error(error))
+      ApiInsertReturned(group: _group, result: Error(error))
     -> {
       let error = api_error(error)
       let popup = Visible(InsertContent(..content, form_error: Some(error)))
       #(Model(..model, saving: False, popup:), effect.none())
     }
-    _, ApiInsertReturned(..) -> panic as "unreachable!"
+    _model, ApiInsertReturned(..) -> #(model, effect.none())
 
-    Model(popup: Hidden, ..), UserClickedEdit(domain) -> {
+    Model(popup: Hidden, saving: False, ..), UserClickedEdit(domain) -> {
       case list.find(model.domains, fn(group) { group.name == domain }) {
         Ok(group) -> {
           let entries = list.map(group.records, entry_to_draft)
           let content = EditContent(domain:, entries:, form_error: None)
           #(Model(..model, popup: Visible(content)), effect.none())
         }
-        Error(Nil) -> panic as "domain not found"
+        Error(Nil) -> #(model, effect.none())
       }
     }
-    _, UserClickedEdit(_) -> panic as "unreachable!"
+    _model, UserClickedEdit(_domain) -> #(model, effect.none())
 
     Model(
       popup: Visible(EditContent(domain:, entries:, ..) as edit_content),
+      saving: False,
       ..,
     ),
       UserSubmittedEdit
@@ -508,10 +517,10 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
         }
       }
     }
-    _, UserSubmittedEdit -> panic as "unreachable!"
+    _model, UserSubmittedEdit -> #(model, effect.none())
 
     Model(popup: Visible(EditContent(..)), ..),
-      ApiPutReturned(domain:, entries:, result: Ok(_))
+      ApiPutReturned(domain:, entries:, result: Ok(_response))
     -> {
       let domains =
         list.map(model.domains, fn(group) {
@@ -523,13 +532,13 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       #(Model(..model, domains:, saving: False, popup: Hidden), effect.none())
     }
     Model(popup: Visible(EditContent(..) as content), ..),
-      ApiPutReturned(domain: _, entries: _, result: Error(error))
+      ApiPutReturned(domain: _domain, entries: _entries, result: Error(error))
     -> {
       let error = api_error(error)
       let popup = Visible(EditContent(..content, form_error: Some(error)))
       #(Model(..model, saving: False, popup:), effect.none())
     }
-    _, ApiPutReturned(..) -> panic as "unreachable!"
+    _model, ApiPutReturned(..) -> #(model, effect.none())
 
     model, UserClickedDelete(domain) -> #(
       Model(..model, deleting: Some(domain)),
@@ -541,7 +550,7 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
       Model(..model, popup: Closing(content), deleting: Some(domain)),
       delete_cancel_after(domain, 3000),
     )
-    _, UserClickedDeleteDomainFromEdit(_) -> panic as "unreachable!"
+    _model, UserClickedDeleteDomainFromEdit(_domain) -> #(model, effect.none())
 
     model, DeleteCancelled(domain) ->
       case model.deleting {
@@ -549,19 +558,19 @@ fn update(model: Model, message: Message) -> #(Model, effect.Effect(Message)) {
           Model(..model, deleting: None),
           effect.none(),
         )
-        _ -> #(model, effect.none())
+        Some(_other_domain) | None -> #(model, effect.none())
       }
 
     model, UserConfirmedDelete(domain) ->
       Model(..model, saving: True, deleting: None)
       |> pair.new(api_delete_domain(domain, ApiDeleteReturned))
 
-    model, ApiDeleteReturned(domain:, result: Ok(_)) -> {
+    model, ApiDeleteReturned(domain:, result: Ok(_response)) -> {
       let domains =
         list.filter(model.domains, fn(group) { group.name != domain })
       #(Model(..model, domains:, saving: False), effect.none())
     }
-    model, ApiDeleteReturned(domain: _, result: Error(err)) -> {
+    model, ApiDeleteReturned(domain: _domain, result: Error(err)) -> {
       let error = Some(api_error(err))
       #(Model(..model, saving: False, error:), effect.none())
     }
@@ -580,7 +589,7 @@ fn view_field_error(error: Option(String)) -> Element(msg) {
 
 fn input_border_state(error: Option(String)) -> String {
   case error {
-    Some(_) -> "border-red-500"
+    Some(_error) -> "border-red-500"
     None -> "border-elevated focus:border-accent"
   }
 }
@@ -634,7 +643,7 @@ fn view(model: Model) -> Element(Message) {
             )
           None -> element.none()
         },
-        view_header(),
+        view_header(global_busy),
         case model.loading {
           True ->
             html.p(
@@ -664,7 +673,7 @@ fn view(model: Model) -> Element(Message) {
   ])
 }
 
-fn view_header() -> Element(Message) {
+fn view_header(busy: Bool) -> Element(Message) {
   html.header(
     [
       attribute.class(
@@ -695,6 +704,7 @@ fn view_header() -> Element(Message) {
       ),
       html.button(
         [
+          attribute.disabled(busy),
           event.on_click(UserClickedInsert),
           attribute.class(
             "w-5 h-5 xs:w-7 xs:h-7 sm:w-10 sm:h-10 md:w-11 md:h-11 lg:w-12 lg:h-12 rounded-md bg-accent text-fg flex items-center justify-center hover:bg-accent/80 transition-colors cursor-pointer",
@@ -730,7 +740,7 @@ fn view_popup(
 
         case id {
           "popup-overlay" -> decode.success(UserClosedPopup)
-          _ -> decode.failure(UserClosedPopup, "")
+          _other_id -> decode.failure(UserClosedPopup, "")
         }
       }),
     ],
@@ -1000,11 +1010,12 @@ fn view_domain_card(
   deleting: Option(String),
   global_busy: Bool,
 ) -> Element(Message) {
-  let dimmed = case deleting {
-    Some(pending) if pending == group.name -> False
-    Some(_) -> True
-    None -> global_busy
-  }
+  let dimmed =
+    global_busy
+    || case deleting {
+      Some(pending) -> pending != group.name
+      None -> False
+    }
 
   let card_class =
     "bg-surface border border-elevated rounded-xl p-3 xs:p-5 sm:p-6 md:p-8 transition-opacity duration-200"
@@ -1034,6 +1045,7 @@ fn view_domain_card(
           [
             html.button(
               [
+                attribute.disabled(dimmed),
                 event.on_click(UserClickedEdit(group.name)),
                 attribute.class(
                   "text-subtle hover:text-fg transition-colors cursor-pointer",
@@ -1041,7 +1053,7 @@ fn view_domain_card(
               ],
               [view_pencil_icon()],
             ),
-            view_card_delete_button(group.name, deleting),
+            view_card_delete_button(group.name, deleting, dimmed),
           ],
         ),
       ],
@@ -1095,19 +1107,22 @@ fn view_entry_row(entry: records.RecordEntry) -> Element(Message) {
 fn view_card_delete_button(
   domain: String,
   deleting: Option(String),
+  disabled: Bool,
 ) -> Element(Message) {
   case deleting {
     Some(pending) if pending == domain ->
       html.button(
         [
+          attribute.disabled(disabled),
           event.on_click(UserConfirmedDelete(domain)),
           attribute.class("text-red-300 transition-colors cursor-pointer"),
         ],
         [view_trash_icon()],
       )
-    _ ->
+    Some(_other_domain) | None ->
       html.button(
         [
+          attribute.disabled(disabled),
           event.on_click(UserClickedDelete(domain)),
           attribute.class(
             "text-subtle hover:text-red-400 transition-colors cursor-pointer",

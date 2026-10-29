@@ -1,6 +1,6 @@
 -module(cache_ffi).
 
--export([new/0, insert/2, insert_with_ttl/2, lookup/2, delete/2, delete_domain/1,
+-export([new/0, replace_local/1, replace_domain/2, replace_upstream/1, lookup/2,
          cleanup_expired/0, system_time_seconds/0]).
 
 new() ->
@@ -8,62 +8,81 @@ new() ->
             [set, public, named_table, {read_concurrency, true}, {write_concurrency, auto}]),
     nil.
 
-insert({a_record, Name, Ttl, Ip}, Expiry) ->
-    ets:insert(dns, {{Name, a, Ip}, {Expiry, Ttl}}),
-    nil;
-insert({aaaa_record, Name, Ttl, Ip}, Expiry) ->
-    ets:insert(dns, {{Name, aaaa, Ip}, {Expiry, Ttl}}),
-    nil;
-insert({cname_record, Name, Ttl, Target}, Expiry) ->
-    ets:insert(dns, {{Name, cname, Target}, {Expiry, Ttl}}),
+replace_local(Records) ->
+    Groups = maps:groups_from_list(fun record_name/1, Records),
+    PreviousNames = [Name || {{local, Name}, _Records} <- ets:match_object(dns, {{local, '_'}, '_'})],
+    Names = lists:usort(PreviousNames ++ maps:keys(Groups)),
+    lists:foreach(fun(Name) -> replace_domain(Name, maps:get(Name, Groups, [])) end, Names),
     nil.
 
-insert_with_ttl(Record, Ttl) ->
-    insert(Record, system_time_seconds() + Ttl).
-
-lookup(Name, Type) ->
-    Now = system_time_seconds(),
-    Matches = ets:match_object(dns, {{Name, Type, '_'}, '_'}),
-    Valid =
-        [make_record(Name, Type, Value, Expiry, Ttl, Now)
-         || {{_, _, Value}, {Expiry, Ttl}} <- Matches, Expiry =:= -1 orelse Expiry - Now > 0],
-    case Valid of
+replace_domain(Name, Records) ->
+    case Records of
         [] ->
-            case Matches of
-                [] ->
-                    {error, not_found};
-                _ ->
-                    {error, expired}
-            end;
-        _ ->
-            {ok, Valid}
+            ets:match_delete(dns, {{upstream, Name, '_'}, '_'}),
+            ets:delete(dns, {local, Name});
+        _Records -> ets:insert(dns, {{local, Name}, Records})
+    end,
+    nil.
+
+record_type({a_record, _Name, _Ttl, _Ip}) -> a;
+record_type({aaaa_record, _Name, _Ttl, _Ip}) -> aaaa;
+record_type({cname_record, _Name, _Ttl, _Target}) -> cname.
+
+record_name({a_record, Name, _Ttl, _Ip}) -> Name;
+record_name({aaaa_record, Name, _Ttl, _Ip}) -> Name;
+record_name({cname_record, Name, _Ttl, _Target}) -> Name.
+
+record_ttl({a_record, _Name, Ttl, _Ip}) -> Ttl;
+record_ttl({aaaa_record, _Name, Ttl, _Ip}) -> Ttl;
+record_ttl({cname_record, _Name, Ttl, _Target}) -> Ttl.
+
+with_ttl({a_record, Name, _PreviousTtl, Ip}, Ttl) -> {a_record, Name, Ttl, Ip};
+with_ttl({aaaa_record, Name, _PreviousTtl, Ip}, Ttl) -> {aaaa_record, Name, Ttl, Ip};
+with_ttl({cname_record, Name, _PreviousTtl, Target}, Ttl) -> {cname_record, Name, Ttl, Target}.
+
+replace_upstream(Records) ->
+    Groups = maps:groups_from_list(fun(Record) -> {record_name(Record), record_type(Record)} end, Records),
+    Now = system_time_seconds(),
+    Entries = maps:fold(
+        fun({Name, Type}, Group, Acc) ->
+            Ttl = lists:min([cache_ttl(Record) || Record <- Group]),
+            [{{upstream, Name, Type}, {Now + Ttl, Group}} | Acc]
+        end,
+        [],
+        Groups),
+    ets:insert(dns, Entries),
+    nil.
+
+cache_ttl(Record) ->
+    case record_ttl(Record) of
+        Ttl when Ttl >= 0, Ttl =< 2147483647 -> Ttl;
+        _InvalidTtl -> 0
     end.
 
-make_record(Name, a, Ip, Expiry, Ttl, Now) ->
-    {a_record, Name, remaining(Expiry, Ttl, Now), Ip};
-make_record(Name, aaaa, Ip, Expiry, Ttl, Now) ->
-    {aaaa_record, Name, remaining(Expiry, Ttl, Now), Ip};
-make_record(Name, cname, Target, Expiry, Ttl, Now) ->
-    {cname_record, Name, remaining(Expiry, Ttl, Now), Target}.
+lookup(Name, Type) ->
+    case ets:lookup(dns, {local, Name}) of
+        [{_Key, Records}] ->
+            case [Record || Record <- Records, record_type(Record) =:= Type] of
+                [] -> {error, not_found};
+                Matching -> {ok, Matching}
+            end;
+        [] -> lookup_upstream(Name, Type)
+    end.
 
-remaining(-1, Ttl, _Now) ->
-    Ttl;
-remaining(Expiry, _Ttl, Now) ->
-    Expiry - Now.
-
-delete(Name, Type) ->
-    ets:match_delete(dns, {{Name, Type, '_'}, '_'}),
-    nil.
-
-delete_domain(Name) ->
-    ets:match_delete(dns, {{Name, '_', '_'}, '_'}),
-    nil.
+lookup_upstream(Name, Type) ->
+    Now = system_time_seconds(),
+    case ets:lookup(dns, {upstream, Name, Type}) of
+        [{_Key, {Expiry, Records}}] when Expiry > Now ->
+            {ok, [with_ttl(Record, Expiry - Now) || Record <- Records]};
+        [{_Key, _Expired}] -> {error, expired};
+        [] -> {error, not_found}
+    end.
 
 cleanup_expired() ->
     Now = system_time_seconds(),
     ets:select_delete(dns,
-                      [{{{'_', '_', '_'}, {'$1', '_'}},
-                        [{'=/=', '$1', -1}, {'<', '$1', Now}],
+                      [{{{upstream, '_', '_'}, {'$1', '_'}},
+                        [{'=<', '$1', Now}],
                         [true]}]),
     nil.
 

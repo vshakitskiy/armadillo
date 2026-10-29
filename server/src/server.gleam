@@ -21,7 +21,6 @@ const name = "  __   ____  _  _   __   ____  __  __    __     __
 pub fn main() -> Nil {
   io.println("\n")
   process.sleep_forever()
-  // <!-- dig @127.0.0.1 google.com A -->
 }
 
 @external(erlang, "terminal_ffi", "clear")
@@ -40,11 +39,7 @@ pub fn start(
 
   let ttl = env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
 
-  let records = case zone.read(zone_path, ttl) {
-    Ok(zone) -> zone.records
-    Error(_) -> []
-  }
-  cache.init(records)
+  cache.init()
 
   let resolver_name = process.new_name("resolver_factory")
   let zone_name = process.new_name("zone_worker")

@@ -46,9 +46,13 @@ with Caddy as a reverse proxy.
 
 ## Domain naming
 
-The server accepts any domain string. That said, avoid `.local`. It is reserved 
-for mDNS/Bonjour (RFC 6762) and Apple devices will not send `.local` queries to 
-a unicast DNS server. `.lan` or `.internal` are common alternatives.
+Names and CNAME targets must fit DNS label and name length limits and must not
+contain whitespace, control characters, quotes, parentheses, semicolons or
+backslashes. The API accepts TTL values from 0 to 2147483647 seconds.
+
+General advice to avoid `.local`! It is reserved for mDNS/Bonjour (see RFC 6762) 
+and Apple devices will not send `.local` queries to a unicast DNS server. `.lan` 
+or `.internal` are common alternatives.
 
 ## Contributing
 

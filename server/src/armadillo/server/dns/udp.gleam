@@ -102,7 +102,7 @@ pub fn new(
     initialise: fn(_self) { Ok(initialised(state)) },
     handler:,
     name: option.None,
-    on_start: fn(_, _) { Nil },
+    on_start: fn(_address, _port) { Nil },
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -121,7 +121,7 @@ pub fn new_with_initialiser(
     initialise:,
     handler:,
     name: option.None,
-    on_start: fn(_, _) { Nil },
+    on_start: fn(_address, _port) { Nil },
     port: 0,
     ipv6: False,
     reuseaddr: False,
@@ -143,17 +143,17 @@ pub fn bind(
   interface: String,
 ) -> Builder(state, message) {
   let address = case interface, parse_address(charlist.from_string(interface)) {
-    "localhost", _ | "127.0.0.1", _ -> Loopback
-    "0.0.0.0", _ -> Any
-    _, Ok(address) -> Address(address)
-    _, Error(_nil) -> panic as "Invalid interface provided"
+    "localhost", _parsed | "127.0.0.1", _parsed -> Loopback
+    "0.0.0.0", _parsed -> Any
+    _interface, Ok(address) -> Address(address)
+    _interface, Error(_nil) -> panic as "Invalid interface provided"
   }
 
   Builder(..builder, interface: address)
 }
 
 @external(erlang, "udp_ffi", "parse_address")
-fn parse_address(value: charlist.Charlist) -> Result(ip_address, Nil)
+fn parse_address(value: charlist.Charlist) -> Result(ip.Address, Nil)
 
 pub fn with_ipv6(builder: Builder(state, message)) -> Builder(state, message) {
   Builder(..builder, ipv6: True)
@@ -219,7 +219,7 @@ pub fn start(
         Ok(socket) -> {
           case sockname(socket) {
             Ok(#(addr, port)) -> builder.on_start(addr, port)
-            Error(_) -> Nil
+            Error(_socket_error) -> Nil
           }
 
           use Initialised(state, user_selector) <- result.try(
@@ -280,9 +280,9 @@ pub fn start(
               )
           }
         }
-        Ok(NormalStop), _ -> actor.stop()
-        Ok(AbnormalStop(reason)), _ -> actor.stop_abnormal(reason)
-        Error(reason), _ -> {
+        Ok(NormalStop), _message -> actor.stop()
+        Ok(AbnormalStop(reason)), _message -> actor.stop_abnormal(reason)
+        Error(reason), _message -> {
           let reason = case reason {
             exception.Errored(_dynamic) ->
               "An error was raised in the handler. This can be caused by calling the erlang:error/1 function, or some other runtime error."
@@ -316,7 +316,7 @@ fn udp_settings(builder: Builder(state, message)) -> List(Option) {
     Loopback, True -> Address(ip.V6(ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 1)))
     Any, False -> Address(ip.V4(ip.Ipv4(0, 0, 0, 0)))
     Any, True -> Address(ip.V6(ip.Ipv6(0, 0, 0, 0, 0, 0, 0, 0)))
-    other, _ -> other
+    Address(_ip) as address, _ipv6 -> address
   }
 
   let options = [
@@ -376,170 +376,86 @@ fn sockname(socket: Socket) -> Result(#(ip.Address, Int), SocketError)
 fn coerce_socket_message(record: dynamic.Dynamic) -> Message(message)
 
 pub type SocketError {
-  /// Socket not owned by the process trying to use it.
-  /// This is documented as an error value in the
-  /// [`gen_udp` documentation](https://www.erlang.org/doc/apps/kernel/gen_udp.html),
-  /// but it's unclear how to trigger it.
   NotOwner
-  /// Operation timed out
   Timeout
-  /// gen_udp threw a bad argument exception. Probably an invalid port number.
   BadArgument
 
-  // https://www.erlang.org/doc/maninet#type-posix
-  /// Address already in use
   Eaddrinuse
-  /// Cannot assign requested address
   Eaddrnotavail
-  /// Address family not supported
   Eafnosupport
-  /// Operation already in progress
   Ealready
-  /// Connection aborted
   Econnaborted
-  /// Connection refused
   Econnrefused
-  /// Connection reset by peer
   Econnreset
-  /// Destination address required
   Edestaddrreq
-  /// Host is down
   Ehostdown
-  /// No route to host
   Ehostunreach
-  /// Operation now in progress
   Einprogress
-  /// Socket is already connected
   Eisconn
-  /// Message too long
   Emsgsize
-  /// Network is down
   Enetdown
-  /// Network is unreachable
   Enetunreach
-  /// Package not installed
   Enopkg
-  /// Protocol not available
   Enoprotoopt
-  /// Socket is not connected
   Enotconn
-  /// Inappropriate ioctl for device
   Enotty
-  /// Socket operation on non-socket
   Enotsock
-  /// Protocol error
   Eproto
-  /// Protocol not supported
   Eprotonosupport
-  /// Protocol wrong type for socket
   Eprototype
-  /// Socket type not supported
   Esocktnosupport
-  /// Connection timed out
   Etimedout
-  /// Operation would block
   Ewouldblock
-  /// Bad port number
   Exbadport
-  /// Bad sequence number
   Exbadseq
-  /// Non-existent domain
   Nxdomain
 
-  // https://www.erlang.org/doc/man/file#type-posix
-  /// Permission denied
   Eacces
-  /// Resource temporarily unavailable
   Eagain
-  /// Bad file descriptor
   Ebadf
-  /// Bad message
   Ebadmsg
-  /// Device or resource busy
   Ebusy
-  /// Resource deadlock avoided
   Edeadlk
-  /// Resource deadlock avoided
   Edeadlock
-  /// Disk quota exceeded
   Edquot
-  /// File exists
   Eexist
-  /// Bad address
   Efault
-  /// File too large
   Efbig
-  /// Inappropriate file type or format
   Eftype
-  /// Interrupted system call
   Eintr
-  /// Invalid argument
   Einval
-  /// Input/output error
   Eio
-  /// Is a directory
   Eisdir
-  /// Too many levels of symbolic links
   Eloop
-  /// Too many open files
   Emfile
-  /// Too many links
   Emlink
-  /// Multihop attempted
   Emultihop
-  /// File name too long
   Enametoolong
-  /// Too many open files in system
   Enfile
-  /// No buffer space available
   Enobufs
-  /// No such device
   Enodev
-  /// No locks available
   Enolck
-  /// Link has been severed
   Enolink
-  /// No such file or directory
   Enoent
-  /// Out of memory
   Enomem
-  /// No space left on device
   Enospc
-  /// Out of streams resources
   Enosr
-  /// Device not a stream
   Enostr
-  /// Function not implemented
   Enosys
-  /// Block device required
   Enotblk
-  /// Not a directory
   Enotdir
-  /// Operation not supported
   Enotsup
-  /// No such device or address
   Enxio
-  /// Operation not supported on socket
   Eopnotsupp
-  /// Value too large for defined data type
   Eoverflow
-  /// Operation not permitted
   Eperm
-  /// Broken pipe
   Epipe
-  /// Result too large
   Erange
-  /// Read-only file system
   Erofs
-  /// Illegal seek
   Espipe
-  /// No such process
   Esrch
-  /// Stale file handle
   Estale
-  /// Text file busy
   Etxtbsy
-  /// Cross-device link
   Exdev
 }
 

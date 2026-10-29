@@ -1,7 +1,6 @@
 import armadillo/shared/ip
 import armadillo/shared/records
 import gleam/bit_array
-import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
@@ -127,16 +126,19 @@ pub fn record_to_resource_record(record: records.Record) -> ResourceRecord {
 
 pub fn resource_record_to_record(
   record: ResourceRecord,
-  next: fn(records.Record) -> Nil,
-) -> Nil {
-  case record.rdata {
-    AData(ip) -> next(records.ARecord(name: record.name, ttl: record.ttl, ip:))
-    AaaaData(ip) ->
-      next(records.AaaaRecord(name: record.name, ttl: record.ttl, ip:))
-    CnameData(target) ->
-      next(records.CnameRecord(name: record.name, ttl: record.ttl, target:))
-
-    RawData(..) -> Nil
+) -> Result(records.Record, Nil) {
+  case record.class {
+    Ch | AnyClass -> Error(Nil)
+    In ->
+      case record.rdata {
+        AData(ip) ->
+          Ok(records.ARecord(name: record.name, ttl: record.ttl, ip:))
+        AaaaData(ip) ->
+          Ok(records.AaaaRecord(name: record.name, ttl: record.ttl, ip:))
+        CnameData(target) ->
+          Ok(records.CnameRecord(name: record.name, ttl: record.ttl, target:))
+        RawData(..) -> Error(Nil)
+      }
   }
 }
 
@@ -161,7 +163,7 @@ pub type EdnsOption {
   EdnsOption(code: Int, data: BitArray)
 }
 
-pub fn decode(data: BitArray) {
+pub fn decode(data: BitArray) -> Result(Decoded, DecodeError) {
   case data {
     <<
       id:16,
@@ -185,7 +187,7 @@ pub fn decode(data: BitArray) {
         2 -> Ok(Status)
         4 -> Ok(Notify)
         5 -> Ok(Update)
-        _ -> Error(Malformed)
+        _unsupported_opcode -> Error(Malformed)
       })
 
       use rcode <- result.try(case rcode {
@@ -195,7 +197,7 @@ pub fn decode(data: BitArray) {
         3 -> Ok(NXDomain)
         4 -> Ok(NotImp)
         5 -> Ok(Refused)
-        _ -> Error(Malformed)
+        _unsupported_rcode -> Error(Malformed)
       })
 
       use #(questions, remaining) <- result.try(decode_questions(
@@ -253,14 +255,18 @@ pub fn decode(data: BitArray) {
               edns:,
             )),
           )
-        _ -> Error(Malformed)
+        _invalid_qr -> Error(Malformed)
       }
     }
-    _ -> Error(NotEnough)
+    _incomplete_header -> Error(NotEnough)
   }
 }
 
-fn decode_questions(remaining: BitArray, packet: BitArray, count: Int) {
+fn decode_questions(
+  remaining: BitArray,
+  packet: BitArray,
+  count: Int,
+) -> Result(#(List(Question), BitArray), DecodeError) {
   do_decode_questions(remaining, packet, count, [])
 }
 
@@ -269,10 +275,10 @@ fn do_decode_questions(
   packet: BitArray,
   count: Int,
   acc: List(Question),
-) {
+) -> Result(#(List(Question), BitArray), DecodeError) {
   case count {
     0 -> Ok(#(list.reverse(acc), remaining))
-    _ -> {
+    _remaining_count -> {
       use #(qname, remaining) <- result.try(decode_name(remaining, packet))
       case remaining {
         <<type_:16, class:16, remaining:bits>> -> {
@@ -282,13 +288,17 @@ fn do_decode_questions(
             ..acc
           ])
         }
-        _ -> Error(NotEnough)
+        _incomplete_question -> Error(NotEnough)
       }
     }
   }
 }
 
-fn decode_records(remaining: BitArray, packet: BitArray, count: Int) {
+fn decode_records(
+  remaining: BitArray,
+  packet: BitArray,
+  count: Int,
+) -> Result(#(List(ResourceRecord), BitArray), DecodeError) {
   do_decode_records(remaining, packet, count, [])
 }
 
@@ -297,10 +307,10 @@ fn do_decode_records(
   packet: BitArray,
   count: Int,
   acc: List(ResourceRecord),
-) {
+) -> Result(#(List(ResourceRecord), BitArray), DecodeError) {
   case count {
     0 -> Ok(#(list.reverse(acc), remaining))
-    _ -> {
+    _remaining_count -> {
       use #(name, remaining) <- result.try(decode_name(remaining, packet))
       use #(record, remaining) <- result.try(decode_record(
         name,
@@ -329,7 +339,7 @@ fn do_decode_additional(
 ) -> Result(#(option.Option(Edns), List(ResourceRecord), BitArray), DecodeError) {
   case count {
     0 -> Ok(#(edns, list.reverse(acc), remaining))
-    _ -> {
+    _remaining_count -> {
       use #(name, remaining) <- result.try(decode_name(remaining, packet))
       case remaining {
         <<
@@ -361,7 +371,7 @@ fn do_decode_additional(
             acc,
           )
         }
-        _ -> {
+        _record_data -> {
           use #(record, remaining) <- result.try(decode_record(
             name,
             remaining,
@@ -385,11 +395,15 @@ fn parse_edns_options(
     <<>> -> Ok(list.reverse(acc))
     <<code:16, length:16, value:bytes-size(length), remaining:bits>> ->
       parse_edns_options(remaining, [EdnsOption(code:, data: value), ..acc])
-    _ -> Error(Malformed)
+    _invalid_options -> Error(Malformed)
   }
 }
 
-fn decode_record(name: String, remaining: BitArray, packet: BitArray) {
+fn decode_record(
+  name: String,
+  remaining: BitArray,
+  packet: BitArray,
+) -> Result(#(ResourceRecord, BitArray), DecodeError) {
   case remaining {
     <<
       rtype:16,
@@ -400,11 +414,13 @@ fn decode_record(name: String, remaining: BitArray, packet: BitArray) {
       remaining:bits,
     >> -> {
       use class <- result.try(decode_class(class))
-      use rdata <- result.try(decode_rdata(rtype, rdata, packet))
+      let rdata_offset =
+        bit_array.byte_size(packet) - bit_array.byte_size(remaining) - rdlength
+      use rdata <- result.try(decode_rdata(rtype, rdata, packet, rdata_offset))
       Ok(#(ResourceRecord(name:, class:, ttl:, rdata:), remaining))
     }
 
-    _ -> Error(NotEnough)
+    _incomplete_record -> Error(NotEnough)
   }
 }
 
@@ -412,21 +428,22 @@ fn decode_rdata(
   rtype: Int,
   rdata: BitArray,
   packet: BitArray,
+  rdata_offset: Int,
 ) -> Result(Rdata, DecodeError) {
   case decode_type(rtype) {
     A ->
       case ip.ipv4_from_bit_array(rdata) {
         Ok(address) -> Ok(AData(address))
-        _ -> Error(Malformed)
+        Error(Nil) -> Error(Malformed)
       }
     Aaaa ->
       case ip.ipv6_from_bit_array(rdata) {
         Ok(address) -> Ok(AaaaData(address))
-        _ -> Error(Malformed)
+        Error(Nil) -> Error(Malformed)
       }
     Cname ->
-      case decode_name(rdata, packet) {
-        Ok(#(target, _)) -> Ok(CnameData(target))
+      case decode_name_at(rdata, packet, rdata_offset) {
+        Ok(#(target, _remaining)) -> Ok(CnameData(target))
         Error(e) -> Error(e)
       }
     type_ -> Ok(RawData(type_, rdata))
@@ -453,7 +470,7 @@ fn decode_class(value: Int) -> Result(Class, DecodeError) {
     1 -> Ok(In)
     3 -> Ok(Ch)
     255 -> Ok(AnyClass)
-    _ -> Error(Malformed)
+    _unsupported_class -> Error(Malformed)
   }
 }
 
@@ -461,52 +478,77 @@ fn decode_name(
   data: BitArray,
   packet: BitArray,
 ) -> Result(#(String, BitArray), DecodeError) {
-  do_decode_name(data, packet, [])
+  let offset = bit_array.byte_size(packet) - bit_array.byte_size(data)
+  decode_name_at(data, packet, offset)
+}
+
+fn decode_name_at(
+  data: BitArray,
+  packet: BitArray,
+  offset: Int,
+) -> Result(#(String, BitArray), DecodeError) {
+  do_decode_name(data, packet, [], offset, 1)
 }
 
 fn do_decode_name(
   data: BitArray,
   packet: BitArray,
   acc: List(String),
+  pointer_limit: Int,
+  expanded_size: Int,
 ) -> Result(#(String, BitArray), DecodeError) {
   case data {
     <<0:8, remaining:bits>> ->
       Ok(#(string.join(list.reverse(acc), "."), remaining))
-    <<length:8, next:8, remaining:bits>> if length >= 0xC0 -> {
-      let offset =
-        int.bitwise_and(length, 0x3F)
-        |> int.bitwise_shift_left(8)
-        |> int.bitwise_or(next)
-
-      case packet {
-        <<_:bytes-size(offset), jumped:bits>> -> {
-          use #(name, _remaining) <- result.try(do_decode_name(
-            jumped,
-            packet,
-            acc,
-          ))
-
-          Ok(#(name, remaining))
-        }
-        _ -> Error(Malformed)
+    <<3:2, offset:14, remaining:bits>> -> {
+      case offset < pointer_limit {
+        False -> Error(Malformed)
+        True ->
+          case packet {
+            <<_prefix:bytes-size(offset), jumped:bits>> -> {
+              use #(name, _remaining) <- result.try(do_decode_name(
+                jumped,
+                packet,
+                acc,
+                offset,
+                expanded_size,
+              ))
+              Ok(#(name, remaining))
+            }
+            _invalid_offset -> Error(Malformed)
+          }
       }
     }
-    <<length:8, label:bytes-size(length), remaining:bits>> ->
-      case bit_array.to_string(label) {
-        Ok(label) -> do_decode_name(remaining, packet, [label, ..acc])
-        Error(Nil) -> Error(Malformed)
+    <<length:8, _remaining:bits>> if length > 63 -> Error(Malformed)
+    <<length:8, label:bytes-size(length), remaining:bits>> -> {
+      let expanded_size = expanded_size + 1 + length
+      case expanded_size <= 255 {
+        False -> Error(Malformed)
+        True ->
+          case bit_array.to_string(label) {
+            Ok(label) ->
+              do_decode_name(
+                remaining,
+                packet,
+                [label, ..acc],
+                pointer_limit,
+                expanded_size,
+              )
+            Error(Nil) -> Error(Malformed)
+          }
       }
-    _ -> Error(NotEnough)
+    }
+    _incomplete_name -> Error(NotEnough)
   }
 }
 
-pub fn encode_query(query: Query) {
+pub fn encode_query(query: Query) -> BitArray {
   let qdcount = list.length(query.questions)
   let nscount = list.length(query.authority)
   let arcount =
     list.length(query.additional)
     + case query.edns {
-      option.Some(_) -> 1
+      option.Some(_edns) -> 1
       option.None -> 0
     }
 
@@ -548,14 +590,14 @@ pub fn encode_query(query: Query) {
   >>
 }
 
-pub fn encode_response(response: Response) {
+pub fn encode_response(response: Response) -> BitArray {
   let qdcount = list.length(response.questions)
   let ancount = list.length(response.answers)
   let nscount = list.length(response.authority)
   let arcount =
     list.length(response.additional)
     + case response.edns {
-      option.Some(_) -> 1
+      option.Some(_edns) -> 1
       option.None -> 0
     }
 
@@ -657,7 +699,7 @@ fn encode_class(class: Class) -> Int {
 pub fn encode_name(name: String) -> BitArray {
   case name {
     "" -> <<0>>
-    _ ->
+    _nonempty_name ->
       string.split(name, ".")
       |> list.fold(from: <<>>, with: fn(acc, label) {
         <<acc:bits, string.byte_size(label):8, label:utf8>>

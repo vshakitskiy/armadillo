@@ -2,9 +2,5 @@
 *.ez
 /build
 erl_crash.dump
-CLAUDE.md
 .overrides.env
-TODO.md
 /data/local.zone
-conf.json
-tun.json
