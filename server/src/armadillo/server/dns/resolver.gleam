@@ -40,10 +40,17 @@ fn handle_query(resolve: Resolve) -> Nil {
       Nil
     }
     dns.QueryOpcode, [question] if question.class != dns.In ->
-      forward_query(peer, query, question, upstream)
+      forward_query(peer, query, question, upstream, [])
     dns.QueryOpcode, [question] -> {
       case lookup_chain(question.qname, question.type_) {
-        Error(NotCached) -> forward_query(peer, query, question, upstream)
+        Error(NotCached(name, aliases)) -> {
+          let upstream_question = case aliases {
+            [] -> question
+            [_first, ..] -> dns.Question(..question, qname: name)
+          }
+
+          forward_query(peer, query, upstream_question, upstream, aliases)
+        }
         Error(CnameLoop) | Error(CnameLimit) | Error(InvalidCnameRecords) -> {
           log_fail(ip.to_string(peer.ip), question)
           let _sent = udp.send(peer, encode_error_response(query, dns.ServFail))
@@ -93,11 +100,13 @@ fn forward_query(
   query: dns.Query,
   question: dns.Question,
   upstream: ip.Address,
+  aliases: List(dns.ResourceRecord),
 ) -> Nil {
   let forwarded_query =
     dns.Query(
       ..query,
       id: random_query_id(),
+      questions: [question],
       truncated: False,
       authority: [],
       additional: [],
@@ -123,7 +132,12 @@ fn forward_query(
     Ok(#(response, payload)) -> {
       cache.store_response(response)
       log_resolved("↑", ip.to_string(peer.ip), question, response.answers)
-      let _sent = udp.send(peer, <<query.id:16, payload:bits>>)
+      let reply = case aliases {
+        [] -> <<query.id:16, payload:bits>>
+        [_first, ..] -> encode_alias_response(query, aliases, response)
+      }
+
+      let _sent = udp.send(peer, reply)
       Nil
     }
     Error(reason) -> {
@@ -136,6 +150,21 @@ fn forward_query(
       Nil
     }
   }
+}
+
+fn encode_alias_response(
+  query: dns.Query,
+  aliases: List(dns.ResourceRecord),
+  response: dns.Response,
+) -> BitArray {
+  dns.Response(
+    ..response,
+    id: query.id,
+    questions: query.questions,
+    authoritative: False,
+    answers: list.append(aliases, response.answers),
+  )
+  |> dns.encode_response
 }
 
 fn query_upstream(
@@ -244,7 +273,7 @@ fn log_fail(peer_ip: String, question: dns.Question) -> Nil {
 const max_cname_hops = 32
 
 type LookupError {
-  NotCached
+  NotCached(name: String, aliases: List(dns.ResourceRecord))
   CnameLoop
   CnameLimit
   InvalidCnameRecords
@@ -269,14 +298,14 @@ fn follow_chain(
   )
 
   case cache.get(qname, qtype) {
-    Ok([]) -> Error(NotCached)
+    Ok([]) -> Error(NotCached(qname, list.reverse(aliases)))
     Ok([_first, _second, ..]) if qtype == dns.Cname -> Error(InvalidCnameRecords)
     Ok(matched) ->
       Ok(list.append(
         list.reverse(aliases),
         list.map(matched, dns.record_to_resource_record),
       ))
-    Error(cache.NotFound) | Error(cache.Expired) ->
+    Error(cache.NoData) | Error(cache.NotFound) | Error(cache.Expired) ->
       follow_alias(qname, qtype, aliases, remaining_hops)
   }
 }
@@ -297,7 +326,9 @@ fn follow_alias(
       )
     Ok([record.CnameRecord(..)]) -> Error(CnameLimit)
     Ok(_invalid_records) -> Error(InvalidCnameRecords)
-    Error(cache.NotFound) | Error(cache.Expired) -> Error(NotCached)
+    Error(cache.NoData) -> Ok(list.reverse(aliases))
+    Error(cache.NotFound) | Error(cache.Expired) ->
+      Error(NotCached(qname, list.reverse(aliases)))
   }
 }
 

@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Support wildcard domain names with IPv4, IPv6 and alias records
+- Resolve local aliases through the upstream DNS server when the target is not
+  cached
 - Simplify the code used to edit domains and process DNS and API requests
 - Return a DNS failure response for circular domain aliases or alias chains 
   longer than 32 records

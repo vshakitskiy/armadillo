@@ -68,9 +68,15 @@ pub type Rcode {
 pub type Type {
   A
   Ns
+  Md
+  Mf
   Cname
   Soa
+  Mb
+  Mg
+  Mr
   Ptr
+  Minfo
   Mx
   Aaaa
   Srv
@@ -84,6 +90,12 @@ pub fn type_to_string(type_: Type) -> String {
     Aaaa -> "AAAA"
     Cname -> "CNAME"
     Ns -> "NS"
+    Md -> "MD"
+    Mf -> "MF"
+    Mb -> "MB"
+    Mg -> "MG"
+    Mr -> "MR"
+    Minfo -> "MINFO"
     Mx -> "MX"
     Ptr -> "PTR"
     Soa -> "SOA"
@@ -442,22 +454,110 @@ fn decode_rdata(
       |> result.map(AaaaData)
       |> result.replace_error(Malformed)
     Cname ->
-      decode_name_at(rdata, packet, rdata_offset)
-      |> result.map(fn(decoded) {
-        let #(target, _remaining) = decoded
-        CnameData(target)
-      })
-    type_ -> Ok(RawData(type_, rdata))
+      decode_rdata_name(rdata, packet, rdata_offset)
+      |> result.map(CnameData)
+    type_ -> decode_raw_rdata(type_, rdata, packet, rdata_offset)
   }
+}
+
+fn decode_rdata_name(
+  data: BitArray,
+  packet: BitArray,
+  offset: Int,
+) -> Result(String, DecodeError) {
+  use #(name, remaining) <- result.try(decode_name_at(data, packet, offset))
+
+  case remaining {
+    <<>> -> Ok(name)
+    _extra_data -> Error(Malformed)
+  }
+}
+
+fn decode_raw_rdata(
+  type_: Type,
+  data: BitArray,
+  packet: BitArray,
+  offset: Int,
+) -> Result(Rdata, DecodeError) {
+  case type_ {
+    Ns | Ptr | Md | Mf | Mb | Mg | Mr -> {
+      use name <- result.map(decode_rdata_name(data, packet, offset))
+
+      RawData(type_, encode_name(name))
+    }
+    Mx -> {
+      case data {
+        <<preference:16, name:bits>> -> {
+          use name <- result.map(decode_rdata_name(name, packet, offset + 2))
+
+          RawData(Mx, <<preference:16, encode_name(name):bits>>)
+        }
+        _incomplete_mx -> Error(Malformed)
+      }
+    }
+    Srv -> {
+      case data {
+        <<priority:16, weight:16, port:16, name:bits>> -> {
+          use name <- result.map(decode_rdata_name(name, packet, offset + 6))
+
+          RawData(Srv, <<
+            priority:16,
+            weight:16,
+            port:16,
+            encode_name(name):bits,
+          >>)
+        }
+        _incomplete_srv -> Error(Malformed)
+      }
+    }
+    Soa | Minfo -> {
+      use #(names, remaining) <- result.try(decode_rdata_name_pair(
+        data,
+        packet,
+        offset,
+      ))
+
+      case type_, remaining {
+        Soa, <<_serial:32, _refresh:32, _retry:32, _expire:32, _minimum:32>> ->
+          Ok(RawData(Soa, <<names:bits, remaining:bits>>))
+        Minfo, <<>> -> Ok(RawData(type_, names))
+        _type, _invalid_data -> Error(Malformed)
+      }
+    }
+    _other_type -> Ok(RawData(type_, data))
+  }
+}
+
+fn decode_rdata_name_pair(
+  data: BitArray,
+  packet: BitArray,
+  offset: Int,
+) -> Result(#(BitArray, BitArray), DecodeError) {
+  use #(first, remaining) <- result.try(decode_name_at(data, packet, offset))
+  let offset =
+    offset + bit_array.byte_size(data) - bit_array.byte_size(remaining)
+  use #(second, remaining) <- result.try(decode_name_at(
+    remaining,
+    packet,
+    offset,
+  ))
+
+  Ok(#(<<encode_name(first):bits, encode_name(second):bits>>, remaining))
 }
 
 fn decode_type(value: Int) -> Type {
   case value {
     1 -> A
     2 -> Ns
+    3 -> Md
+    4 -> Mf
     5 -> Cname
     6 -> Soa
+    7 -> Mb
+    8 -> Mg
+    9 -> Mr
     12 -> Ptr
+    14 -> Minfo
     15 -> Mx
     28 -> Aaaa
     33 -> Srv
@@ -653,9 +753,15 @@ fn encode_type(type_: Type) -> Int {
   case type_ {
     A -> 1
     Ns -> 2
+    Md -> 3
+    Mf -> 4
     Cname -> 5
     Soa -> 6
+    Mb -> 7
+    Mg -> 8
+    Mr -> 9
     Ptr -> 12
+    Minfo -> 14
     Mx -> 15
     Aaaa -> 28
     Srv -> 33

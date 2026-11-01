@@ -7,6 +7,7 @@ import gleam/otp/supervision
 
 pub type CacheError {
   NotFound
+  NoData
   Expired
 }
 

@@ -50,6 +50,10 @@ Names and CNAME targets must fit DNS label and name length limits and must not
 contain whitespace, control characters, quotes, parentheses, semicolons or
 backslashes. The API accepts TTL values from 0 to 2147483647 seconds.
 
+You can add wildcard domains (domains with asterix like `*.my.domain`) with A, 
+AAAA or CNAME records in the UI. Matching rules follows 
+[RFC 4592](https://www.rfc-editor.org/rfc/rfc4592.html).
+
 General advice to avoid `.local`! It is reserved for mDNS/Bonjour (see RFC 6762) 
 and Apple devices will not send `.local` queries to a unicast DNS server. `.lan` 
 or `.internal` are common alternatives.

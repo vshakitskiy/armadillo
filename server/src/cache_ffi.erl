@@ -4,19 +4,20 @@
          cleanup_expired/0, system_time_seconds/0]).
 
 new() ->
-    ets:new(dns, [
-        set,
+    Options = [
         public,
         named_table,
         {read_concurrency, true},
         {write_concurrency, auto}
-    ]),
+    ],
+    ets:new(dns, [set | Options]),
+    ets:new(dns_local, [ordered_set | Options]),
     nil.
 
 replace_local(Records) ->
     Groups = maps:groups_from_list(fun record_name/1, Records),
     PreviousNames = [
-        Name || {{local, Name}, _Records} <- ets:match_object(dns, {{local, '_'}, '_'})
+        record_name(Record) || {_Key, [Record | _Rest]} <- ets:tab2list(dns_local)
     ],
     Names = lists:usort(PreviousNames ++ maps:keys(Groups)),
 
@@ -30,8 +31,8 @@ replace_domain(Name, Records) ->
     case Records of
         [] ->
             ets:match_delete(dns, {{upstream, Name, '_'}, '_'}),
-            ets:delete(dns, {local, Name});
-        _Records -> ets:insert(dns, {{local, Name}, Records})
+            ets:delete(dns_local, local_key(Name));
+        _Records -> ets:insert(dns_local, {local_key(Name), Records})
     end,
     nil.
 
@@ -79,14 +80,70 @@ cache_ttl(Record) ->
     end.
 
 lookup(Name, Type) ->
-    case ets:lookup(dns, {local, Name}) of
-        [{_Key, Records}] ->
-            case [Record || Record <- Records, record_type(Record) =:= Type] of
-                [] -> {error, not_found};
+    case local_records(name_labels(Name)) of
+        {ok, Records} ->
+            Matching = [
+                with_name(Record, Name) || Record <- Records,
+                Type =:= any_type orelse record_type(Record) =:= Type
+            ],
+
+            case Matching of
+                [] -> {error, no_data};
                 Matching -> {ok, Matching}
             end;
-        [] -> lookup_upstream(Name, Type)
+        {error, not_found} -> lookup_upstream(Name, Type)
     end.
+
+local_key(Name) ->
+    lists:reverse(name_labels(Name)).
+
+name_labels(<<".">>) -> [];
+name_labels(Name) -> binary:split(Name, <<".">>, [global]).
+
+local_records(Labels) ->
+    case records_at(lists:reverse(Labels)) of
+        {ok, Records} -> {ok, Records};
+        {error, not_found} ->
+            case Labels of
+                [_Label | Parent] -> wildcard_records(Parent);
+                [] -> {error, not_found}
+            end
+    end.
+
+records_at(Key) ->
+    case ets:lookup(dns_local, Key) of
+        [{_Key, Records}] -> {ok, Records};
+        [] ->
+            case has_descendants(Key) of
+                true -> {ok, []};
+                false -> {error, not_found}
+            end
+    end.
+
+has_descendants(Key) ->
+    case ets:next(dns_local, Key) of
+        '$end_of_table' -> false;
+        NextKey -> lists:prefix(Key, NextKey)
+    end.
+
+wildcard_records(Labels) ->
+    Key = lists:reverse(Labels),
+
+    case ets:member(dns_local, Key) orelse has_descendants(Key) of
+        true -> records_at(Key ++ [<<"*">>]);
+        false ->
+            case Labels of
+                [_Label | Parent] -> wildcard_records(Parent);
+                [] -> {error, not_found}
+            end
+    end.
+
+with_name({a_record, _Name, Ttl, Ip}, Name) ->
+    {a_record, Name, Ttl, Ip};
+with_name({aaaa_record, _Name, Ttl, Ip}, Name) ->
+    {aaaa_record, Name, Ttl, Ip};
+with_name({cname_record, _Name, Ttl, Target}, Name) ->
+    {cname_record, Name, Ttl, Target}.
 
 lookup_upstream(Name, Type) ->
     Now = system_time_seconds(),
