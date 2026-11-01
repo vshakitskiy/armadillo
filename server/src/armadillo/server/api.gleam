@@ -1,6 +1,6 @@
 import armadillo/server/env
 import armadillo/server/zone
-import armadillo/shared/records
+import armadillo/shared/record
 import armadillo/wisp/wisp_ewe
 import envoy
 import ewe
@@ -15,7 +15,9 @@ import gleam/json
 import gleam/list
 import gleam/otp/supervision
 import gleam/result
+import gleam/uri
 import logging
+import simplifile
 import wisp
 
 pub fn supervised(
@@ -31,6 +33,7 @@ pub fn supervised(
 
       wisp.random_string(32)
     })
+
   let port = env.get_or("API_PORT", parse: int.parse, or: 3000, log: "3000")
 
   handler(_, Context(zone))
@@ -47,6 +50,7 @@ pub fn supervised(
     }
 
     let url = http.scheme_to_string(scheme) <> "://" <> address <> ":" <> port
+
     logging.log(logging.Info, "UI listening on " <> url)
   })
   |> ewe.supervised
@@ -68,17 +72,17 @@ fn handler(
   case request.method, wisp.path_segments(request) {
     http.Get, ["api", "domains"] -> {
       zone.get_records(context.zone)
-      |> list.group(fn(record) { record.name })
+      |> list.group(fn(local_record) { local_record.name })
       |> dict.to_list
       |> list.map(fn(pair) {
-        let #(name, records) = pair
+        let #(name, domain_records) = pair
 
-        records.DomainGroup(
+        record.DomainGroup(
           name:,
-          records: list.map(records, records.record_to_entry),
+          records: list.map(domain_records, record.to_entry),
         )
       })
-      |> json.array(of: records.domain_group_to_json)
+      |> json.array(of: record.domain_group_to_json)
       |> json.to_string
       |> wisp.json_response(200)
     }
@@ -86,63 +90,31 @@ fn handler(
     http.Post, ["api", "domains"] -> {
       use json <- wisp.require_json(request)
 
-      case decode.run(json, records.domain_group_decoder()) {
-        Ok(group) -> {
-          case zone.insert_domain(context.zone, group.name, group.records) {
-            Ok(Nil) -> wisp.no_content()
-            Error(zone.Conflict) ->
-              wisp.response(409)
-              |> wisp.string_body("Domain already exists")
-            Error(zone.InvalidRecord(_name, reason)) ->
-              wisp.bad_request(records.describe_validation_error(reason))
-            Error(zone.CnameConflict) ->
-              wisp.response(422)
-              |> wisp.string_body("A CNAME must be the domain's only record")
-            Error(zone.WriteFailure(_file_error)) ->
-              wisp.response(503)
-              |> wisp.string_body("Failed to write zone file")
-            Error(zone.NotFound) -> panic as "unreachable!"
-          }
-        }
+      case decode.run(json, record.domain_group_decoder()) {
+        Ok(group) ->
+          zone.insert_domain(context.zone, group.name, group.records)
+          |> mutation_response
         Error(_error) -> wisp.bad_request("Invalid body")
       }
     }
 
-    http.Put, ["api", "domains", name] -> {
+    http.Put, ["api", "domains", ..path] -> {
+      use name <- require_domain_name(request, path)
       use json <- wisp.require_json(request)
 
-      case decode.run(json, decode.list(of: records.record_entry_decoder())) {
-        Ok(entries) -> {
-          case zone.put_domain(context.zone, name, entries) {
-            Ok(Nil) -> wisp.no_content()
-            Error(zone.InvalidRecord(_name, reason)) ->
-              wisp.bad_request(records.describe_validation_error(reason))
-            Error(zone.CnameConflict) ->
-              wisp.response(422)
-              |> wisp.string_body("A CNAME must be the domain's only record")
-            Error(zone.WriteFailure(_file_error)) ->
-              wisp.response(503)
-              |> wisp.string_body("Failed to write zone file")
-            Error(zone.Conflict) -> panic as "unreachable!"
-            Error(zone.NotFound) -> panic as "unreachable!"
-          }
-        }
+      case decode.run(json, decode.list(of: record.entry_decoder())) {
+        Ok(entries) ->
+          zone.put_domain(context.zone, name, entries)
+          |> mutation_response
         Error(_error) -> wisp.bad_request("Invalid body")
       }
     }
 
-    http.Delete, ["api", "domains", name] -> {
-      case zone.delete_domain(context.zone, name) {
-        Ok(Nil) -> wisp.no_content()
-        Error(zone.InvalidRecord(_name, reason)) ->
-          wisp.bad_request(records.describe_validation_error(reason))
-        Error(zone.WriteFailure(_file_error)) ->
-          wisp.response(503)
-          |> wisp.string_body("Failed to write zone file")
-        Error(zone.Conflict)
-        | Error(zone.CnameConflict)
-        | Error(zone.NotFound) -> panic as "unreachable!"
-      }
+    http.Delete, ["api", "domains", ..path] -> {
+      use name <- require_domain_name(request, path)
+
+      zone.delete_domain(context.zone, name)
+      |> mutation_response
     }
 
     _method, _segments -> {
@@ -154,5 +126,52 @@ fn handler(
         Error(Nil) -> wisp.internal_server_error()
       }
     }
+  }
+}
+
+fn mutation_response(result: Result(Nil, zone.ZoneError)) -> wisp.Response {
+  case result {
+    Ok(Nil) -> wisp.no_content()
+    Error(error) -> zone_error_response(error)
+  }
+}
+
+fn zone_error_response(error: zone.ZoneError) -> wisp.Response {
+  case error {
+    zone.Conflict ->
+      wisp.response(409)
+      |> wisp.string_body("Domain already exists")
+    zone.InvalidRecord(_name, reason) ->
+      wisp.bad_request(record.describe_validation_error(reason))
+    zone.CnameConflict ->
+      wisp.response(422)
+      |> wisp.string_body("A CNAME must be the domain's only record")
+    zone.WriteFailure(reason) -> {
+      logging.log(
+        logging.Error,
+        "Failed to write zone file: " <> simplifile.describe_error(reason),
+      )
+
+      wisp.response(503)
+      |> wisp.string_body("Failed to write zone file")
+    }
+  }
+}
+
+fn require_domain_name(
+  request: wisp.Request,
+  path: List(String),
+  next: fn(String) -> wisp.Response,
+) -> wisp.Response {
+  let name = case path {
+    [] -> request.get_query(request) |> result.try(list.key_find(_, "name"))
+    [encoded] -> uri.percent_decode(encoded)
+    _extra_segments -> Error(Nil)
+  }
+
+  case name {
+    Ok(name) if name != "" -> next(name)
+    Ok(_empty_name) | Error(Nil) ->
+      wisp.bad_request("Missing or invalid domain name")
   }
 }

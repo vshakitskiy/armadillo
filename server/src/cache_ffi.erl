@@ -4,15 +4,26 @@
          cleanup_expired/0, system_time_seconds/0]).
 
 new() ->
-    ets:new(dns,
-            [set, public, named_table, {read_concurrency, true}, {write_concurrency, auto}]),
+    ets:new(dns, [
+        set,
+        public,
+        named_table,
+        {read_concurrency, true},
+        {write_concurrency, auto}
+    ]),
     nil.
 
 replace_local(Records) ->
     Groups = maps:groups_from_list(fun record_name/1, Records),
-    PreviousNames = [Name || {{local, Name}, _Records} <- ets:match_object(dns, {{local, '_'}, '_'})],
+    PreviousNames = [
+        Name || {{local, Name}, _Records} <- ets:match_object(dns, {{local, '_'}, '_'})
+    ],
     Names = lists:usort(PreviousNames ++ maps:keys(Groups)),
-    lists:foreach(fun(Name) -> replace_domain(Name, maps:get(Name, Groups, [])) end, Names),
+
+    lists:foreach(
+        fun(Name) -> replace_domain(Name, maps:get(Name, Groups, [])) end,
+        Names
+    ),
     nil.
 
 replace_domain(Name, Records) ->
@@ -36,12 +47,18 @@ record_ttl({a_record, _Name, Ttl, _Ip}) -> Ttl;
 record_ttl({aaaa_record, _Name, Ttl, _Ip}) -> Ttl;
 record_ttl({cname_record, _Name, Ttl, _Target}) -> Ttl.
 
-with_ttl({a_record, Name, _PreviousTtl, Ip}, Ttl) -> {a_record, Name, Ttl, Ip};
-with_ttl({aaaa_record, Name, _PreviousTtl, Ip}, Ttl) -> {aaaa_record, Name, Ttl, Ip};
-with_ttl({cname_record, Name, _PreviousTtl, Target}, Ttl) -> {cname_record, Name, Ttl, Target}.
+with_ttl({a_record, Name, _PreviousTtl, Ip}, Ttl) ->
+    {a_record, Name, Ttl, Ip};
+with_ttl({aaaa_record, Name, _PreviousTtl, Ip}, Ttl) ->
+    {aaaa_record, Name, Ttl, Ip};
+with_ttl({cname_record, Name, _PreviousTtl, Target}, Ttl) ->
+    {cname_record, Name, Ttl, Target}.
 
 replace_upstream(Records) ->
-    Groups = maps:groups_from_list(fun(Record) -> {record_name(Record), record_type(Record)} end, Records),
+    Groups = maps:groups_from_list(
+        fun(Record) -> {record_name(Record), record_type(Record)} end,
+        Records
+    ),
     Now = system_time_seconds(),
     Entries = maps:fold(
         fun({Name, Type}, Group, Acc) ->
@@ -49,7 +66,9 @@ replace_upstream(Records) ->
             [{{upstream, Name, Type}, {Now + Ttl, Group}} | Acc]
         end,
         [],
-        Groups),
+        Groups
+    ),
+
     ets:insert(dns, Entries),
     nil.
 
@@ -71,6 +90,7 @@ lookup(Name, Type) ->
 
 lookup_upstream(Name, Type) ->
     Now = system_time_seconds(),
+
     case ets:lookup(dns, {upstream, Name, Type}) of
         [{_Key, {Expiry, Records}}] when Expiry > Now ->
             {ok, [with_ttl(Record, Expiry - Now) || Record <- Records]};
@@ -80,10 +100,10 @@ lookup_upstream(Name, Type) ->
 
 cleanup_expired() ->
     Now = system_time_seconds(),
-    ets:select_delete(dns,
-                      [{{{upstream, '_', '_'}, {'$1', '_'}},
-                        [{'=<', '$1', Now}],
-                        [true]}]),
+
+    ets:select_delete(dns, [
+        {{{upstream, '_', '_'}, {'$1', '_'}}, [{'=<', '$1', Now}], [true]}
+    ]),
     nil.
 
 system_time_seconds() ->

@@ -1,5 +1,5 @@
 import armadillo/server/dns/protocol as dns
-import armadillo/shared/records
+import armadillo/shared/record
 import gleam/erlang/process
 import gleam/list
 import gleam/otp/actor
@@ -13,11 +13,22 @@ pub type CacheError {
 @external(erlang, "cache_ffi", "new")
 pub fn init() -> Nil
 
+pub fn replace_local(records: List(record.Record)) -> Nil {
+  records |> list.map(record.normalize) |> do_replace_local
+}
+
 @external(erlang, "cache_ffi", "replace_local")
-pub fn replace_local(records: List(records.Record)) -> Nil
+fn do_replace_local(records: List(record.Record)) -> Nil
+
+pub fn replace_domain(name: String, records: List(record.Record)) -> Nil {
+  do_replace_domain(
+    record.normalize_name(name),
+    list.map(records, record.normalize),
+  )
+}
 
 @external(erlang, "cache_ffi", "replace_domain")
-pub fn replace_domain(name: String, records: List(records.Record)) -> Nil
+fn do_replace_domain(name: String, records: List(record.Record)) -> Nil
 
 type Cleanup {
   Cleanup
@@ -46,19 +57,27 @@ pub fn store_response(response: dns.Response) -> Nil {
     True ->
       response.answers
       |> list.filter_map(dns.resource_record_to_record)
+      |> list.map(record.normalize)
       |> replace_upstream
     False -> Nil
   }
 }
 
 @external(erlang, "cache_ffi", "replace_upstream")
-fn replace_upstream(records: List(records.Record)) -> Nil
+fn replace_upstream(records: List(record.Record)) -> Nil
 
-@external(erlang, "cache_ffi", "lookup")
 pub fn get(
   name: String,
   type_: dns.Type,
-) -> Result(List(records.Record), CacheError)
+) -> Result(List(record.Record), CacheError) {
+  do_get(record.normalize_name(name), type_)
+}
+
+@external(erlang, "cache_ffi", "lookup")
+fn do_get(
+  name: String,
+  type_: dns.Type,
+) -> Result(List(record.Record), CacheError)
 
 @external(erlang, "cache_ffi", "cleanup_expired")
 fn cleanup_expired() -> Nil

@@ -2,7 +2,7 @@ import armadillo/server/cache
 import armadillo/server/dns/protocol as dns
 import armadillo/server/dns/udp
 import armadillo/shared/ip
-import armadillo/shared/records
+import armadillo/shared/record
 import gleam/bool
 import gleam/erlang/process
 import gleam/list
@@ -10,6 +10,7 @@ import gleam/option
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/otp/supervision
+import gleam/result
 import gleam/string
 import logging
 
@@ -38,6 +39,8 @@ fn handle_query(resolve: Resolve) -> Nil {
       let _sent = udp.send(peer, encode_response(query, []))
       Nil
     }
+    dns.QueryOpcode, [question] if question.class != dns.In ->
+      forward_query(peer, query, question, upstream)
     dns.QueryOpcode, [question] -> {
       case lookup_chain(question.qname, question.type_) {
         Error(NotCached) -> forward_query(peer, query, question, upstream)
@@ -68,49 +71,129 @@ fn handle_query(resolve: Resolve) -> Nil {
   }
 }
 
+const upstream_timeout_ms = 5000
+
+type TimeUnit {
+  Millisecond
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: TimeUnit) -> Int
+
+@external(erlang, "crypto", "strong_rand_bytes")
+fn random_bytes(size: Int) -> BitArray
+
+fn random_query_id() -> Int {
+  let assert <<id:16>> = random_bytes(2)
+  id
+}
+
 fn forward_query(
   peer: udp.Peer,
   query: dns.Query,
   question: dns.Question,
   upstream: ip.Address,
 ) -> Nil {
-  let peer_ip = ip.to_string(peer.ip)
-  let upstream_query =
-    dns.Query(..query, truncated: False, authority: [], additional: [])
-    |> dns.encode_query
+  let forwarded_query =
+    dns.Query(
+      ..query,
+      id: random_query_id(),
+      truncated: False,
+      authority: [],
+      additional: [],
+    )
 
-  let assert Ok(socket) = udp.open(0, [udp.ActiveMode(udp.Passive)])
-  let _sent =
-    udp.send(udp.Peer(socket:, ip: upstream, port: 53), upstream_query)
+  let socket_options = case upstream {
+    ip.V4(_address) -> []
+    ip.V6(_address) -> [udp.Ipv6]
+  }
 
-  case udp.recv(socket, 5000) {
-    Ok(#(resp_peer, data)) -> {
-      udp.close(socket)
-      case dns.decode(data) {
-        Ok(dns.DecodedResponse(response))
-          if response.id == query.id && resp_peer.ip == upstream
-        -> {
-          cache.store_response(response)
+  let response_result = {
+    use socket <- result.try(
+      udp.open(0, [udp.ActiveMode(udp.Passive), ..socket_options]),
+    )
 
-          log_resolved("↑", peer_ip, question, response.answers)
-          let _sent = udp.send(peer, data)
-          Nil
-        }
-        Ok(dns.DecodedResponse(_response))
-        | Ok(dns.DecodedQuery(_query))
-        | Error(dns.NotEnough)
-        | Error(dns.Malformed) -> {
-          log_fail(peer_ip, question)
-          let _sent = udp.send(peer, encode_error_response(query, dns.ServFail))
-          Nil
-        }
-      }
+    let reply = query_upstream(socket, upstream, forwarded_query)
+    udp.close(socket)
+
+    reply
+  }
+
+  case response_result {
+    Ok(#(response, payload)) -> {
+      cache.store_response(response)
+      log_resolved("↑", ip.to_string(peer.ip), question, response.answers)
+      let _sent = udp.send(peer, <<query.id:16, payload:bits>>)
+      Nil
     }
-    Error(_reason) -> {
-      log_fail(peer_ip, question)
+    Error(reason) -> {
+      log_fail(ip.to_string(peer.ip), question)
+      logging.log(
+        logging.Warning,
+        "Upstream query failed: " <> udp.describe_error(reason),
+      )
       let _sent = udp.send(peer, encode_error_response(query, dns.ServFail))
       Nil
     }
+  }
+}
+
+fn query_upstream(
+  socket: udp.Socket,
+  upstream: ip.Address,
+  query: dns.Query,
+) -> Result(#(dns.Response, BitArray), udp.SocketError) {
+  use _sent <- result.try(udp.send(
+    udp.Peer(socket:, ip: upstream, port: 53),
+    dns.encode_query(query),
+  ))
+
+  let deadline = monotonic_time(Millisecond) + upstream_timeout_ms
+
+  receive_response(socket, upstream, query, deadline)
+}
+
+fn receive_response(
+  socket: udp.Socket,
+  upstream: ip.Address,
+  query: dns.Query,
+  deadline: Int,
+) -> Result(#(dns.Response, BitArray), udp.SocketError) {
+  let remaining = deadline - monotonic_time(Millisecond)
+
+  use <- bool.guard(when: remaining <= 0, return: Error(udp.Timeout))
+
+  use #(peer, data) <- result.try(udp.recv(socket, remaining))
+
+  case dns.decode(data), data {
+    Ok(dns.DecodedResponse(response)), <<_id:16, payload:bits>> -> {
+      case matches_response(response, query, peer, upstream) {
+        True -> Ok(#(response, payload))
+        False -> receive_response(socket, upstream, query, deadline)
+      }
+    }
+    _invalid_response, _packet ->
+      receive_response(socket, upstream, query, deadline)
+  }
+}
+
+fn matches_response(
+  response: dns.Response,
+  query: dns.Query,
+  peer: udp.Peer,
+  upstream: ip.Address,
+) -> Bool {
+  response.id == query.id
+  && peer.ip == upstream
+  && peer.port == 53
+  && response.opcode == query.opcode
+  && case response.questions, query.questions {
+    [actual], [expected] ->
+      actual.type_ == expected.type_
+      && actual.class == expected.class
+      && record.normalize_name(actual.qname)
+      == record.normalize_name(expected.qname)
+    _actual, _expected -> False
   }
 }
 
@@ -120,10 +203,10 @@ fn log_resolved(
   question: dns.Question,
   answers: List(dns.ResourceRecord),
 ) -> Nil {
-  let ips =
+  let answer_values =
     answers
-    |> list.filter_map(fn(r) {
-      case r.rdata {
+    |> list.filter_map(fn(answer) {
+      case answer.rdata {
         dns.AData(ip) -> Ok(ip.ipv4_to_string(ip))
         dns.AaaaData(ip) -> Ok(ip.ipv6_to_string(ip))
         dns.CnameData(target) -> Ok(target)
@@ -131,6 +214,7 @@ fn log_resolved(
       }
     })
     |> string.join(" ")
+
   logging.log(
     logging.Info,
     symbol
@@ -141,7 +225,7 @@ fn log_resolved(
       <> " "
       <> dns.type_to_string(question.type_)
       <> "  →  "
-      <> ips,
+      <> answer_values,
   )
 }
 
@@ -170,7 +254,7 @@ fn lookup_chain(
   qname: String,
   qtype: dns.Type,
 ) -> Result(List(dns.ResourceRecord), LookupError) {
-  follow_chain(qname, qtype, [], max_cname_hops)
+  follow_chain(record.normalize_name(qname), qtype, [], max_cname_hops)
 }
 
 fn follow_chain(
@@ -183,6 +267,7 @@ fn follow_chain(
     when: list.any(aliases, fn(alias) { alias.name == qname }),
     return: Error(CnameLoop),
   )
+
   case cache.get(qname, qtype) {
     Ok([]) -> Error(NotCached)
     Ok([_first, _second, ..]) if qtype == dns.Cname -> Error(InvalidCnameRecords)
@@ -203,21 +288,21 @@ fn follow_alias(
   remaining_hops: Int,
 ) -> Result(List(dns.ResourceRecord), LookupError) {
   case cache.get(qname, dns.Cname) {
-    Ok([records.CnameRecord(target:, ..) as cname]) if remaining_hops > 0 ->
+    Ok([record.CnameRecord(target:, ..) as cname]) if remaining_hops > 0 ->
       follow_chain(
         target,
         qtype,
         [dns.record_to_resource_record(cname), ..aliases],
         remaining_hops - 1,
       )
-    Ok([records.CnameRecord(..)]) -> Error(CnameLimit)
+    Ok([record.CnameRecord(..)]) -> Error(CnameLimit)
     Ok(_invalid_records) -> Error(InvalidCnameRecords)
     Error(cache.NotFound) | Error(cache.Expired) -> Error(NotCached)
   }
 }
 
 fn encode_error_response(query: dns.Query, rcode: dns.Rcode) -> BitArray {
-  dns.encode_response(dns.Response(
+  dns.Response(
     id: query.id,
     opcode: query.opcode,
     truncated: False,
@@ -230,7 +315,8 @@ fn encode_error_response(query: dns.Query, rcode: dns.Rcode) -> BitArray {
     authority: [],
     additional: [],
     edns: option.None,
-  ))
+  )
+  |> dns.encode_response
 }
 
 fn encode_response(

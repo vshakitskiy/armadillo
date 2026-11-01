@@ -6,7 +6,7 @@ pub fn get_or(
   parse parse: fn(String) -> Result(a, Nil),
   or default: a,
   log default_string: String,
-) {
+) -> a {
   case envoy.get(key) {
     Ok(value) -> {
       case parse(value) {

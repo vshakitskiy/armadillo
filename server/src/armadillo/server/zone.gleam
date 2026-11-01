@@ -1,8 +1,7 @@
 import armadillo/server/cache
-import armadillo/server/dns/protocol as dns
 import armadillo/server/env
 import armadillo/shared/ip
-import armadillo/shared/records
+import armadillo/shared/record
 import filepath
 import gleam/erlang/process
 import gleam/int
@@ -16,29 +15,16 @@ import logging
 import simplifile
 
 pub type Message {
-  GetRecords(reply_to: process.Subject(List(records.Record)))
-  InsertRecord(
-    reply_to: process.Subject(Result(Nil, ZoneError)),
-    record: records.Record,
-  )
-  UpdateRecord(
-    reply_to: process.Subject(Result(Nil, ZoneError)),
-    record: records.Record,
-  )
-  DeleteRecord(
-    reply_to: process.Subject(Result(Nil, ZoneError)),
-    name: String,
-    type_: dns.Type,
-  )
+  GetRecords(reply_to: process.Subject(List(record.Record)))
   InsertDomain(
     reply_to: process.Subject(Result(Nil, ZoneError)),
     name: String,
-    entries: List(records.RecordEntry),
+    entries: List(record.RecordEntry),
   )
   PutDomain(
     reply_to: process.Subject(Result(Nil, ZoneError)),
     name: String,
-    entries: List(records.RecordEntry),
+    entries: List(record.RecordEntry),
   )
   DeleteDomain(reply_to: process.Subject(Result(Nil, ZoneError)), name: String)
 }
@@ -46,9 +32,8 @@ pub type Message {
 pub type ZoneError {
   Conflict
   CnameConflict
-  NotFound
   WriteFailure(simplifile.FileError)
-  InvalidRecord(name: String, reason: records.ValidationError)
+  InvalidRecord(name: String, reason: record.ValidationError)
 }
 
 pub fn worker(
@@ -85,20 +70,22 @@ pub fn worker(
         }
       }
 
-      list.each(zone.records, fn(record) {
-        case records.validate(record) {
+      list.each(zone.records, fn(local_record) {
+        case record.validate(local_record) {
           Ok(Nil) -> Nil
           Error(reason) ->
             logging.log(
               logging.Warning,
               "Preserving invalid zone record for "
-                <> record.name
+                <> local_record.name
                 <> ": "
-                <> records.describe_validation_error(reason),
+                <> record.describe_validation_error(reason),
             )
         }
       })
+
       cache.replace_local(zone.records)
+
       actor.initialised(zone)
       |> actor.returning(self)
       |> Ok
@@ -127,8 +114,8 @@ fn write_default_zone(path: String, default_ttl: Int) -> Zone {
       records: [],
     )
 
-  let dir = filepath.directory_name(path)
-  let _created_directory = simplifile.create_directory_all(dir)
+  let directory = filepath.directory_name(path)
+  let _created_directory = simplifile.create_directory_all(directory)
   let assert Ok(Nil) = write(zone)
     as "writing to zone file path is not possible!"
 
@@ -136,46 +123,24 @@ fn write_default_zone(path: String, default_ttl: Int) -> Zone {
 }
 
 fn backup_path(path: String) -> String {
-  let #(y, m, d) = erlang_date()
+  let #(year, month, day) = erlang_date()
 
   path
   <> "."
-  <> int.to_string(y)
-  <> string.pad_start(int.to_string(m), 2, "0")
-  <> string.pad_start(int.to_string(d), 2, "0")
+  <> int.to_string(year)
+  <> string.pad_start(int.to_string(month), 2, "0")
+  <> string.pad_start(int.to_string(day), 2, "0")
   <> ".bak"
 }
 
-pub fn get_records(subject: process.Subject(Message)) -> List(records.Record) {
+pub fn get_records(subject: process.Subject(Message)) -> List(record.Record) {
   process.call(subject, waiting: 10_000, sending: GetRecords)
-}
-
-pub fn insert_record(
-  subject: process.Subject(Message),
-  record: records.Record,
-) -> Result(Nil, ZoneError) {
-  process.call(subject, waiting: 10_000, sending: InsertRecord(_, record))
-}
-
-pub fn update_record(
-  subject: process.Subject(Message),
-  record: records.Record,
-) -> Result(Nil, ZoneError) {
-  process.call(subject, waiting: 10_000, sending: UpdateRecord(_, record))
-}
-
-pub fn delete_record(
-  subject: process.Subject(Message),
-  name: String,
-  type_: dns.Type,
-) -> Result(Nil, ZoneError) {
-  process.call(subject, waiting: 10_000, sending: DeleteRecord(_, name, type_))
 }
 
 pub fn insert_domain(
   subject: process.Subject(Message),
   name: String,
-  entries: List(records.RecordEntry),
+  entries: List(record.RecordEntry),
 ) -> Result(Nil, ZoneError) {
   process.call(subject, waiting: 10_000, sending: InsertDomain(_, name, entries))
 }
@@ -183,7 +148,7 @@ pub fn insert_domain(
 pub fn put_domain(
   subject: process.Subject(Message),
   name: String,
-  entries: List(records.RecordEntry),
+  entries: List(record.RecordEntry),
 ) -> Result(Nil, ZoneError) {
   process.call(subject, waiting: 10_000, sending: PutDomain(_, name, entries))
 }
@@ -201,63 +166,14 @@ fn handle_message(zone: Zone, message: Message) -> actor.Next(Zone, Message) {
       process.send(reply_to, zone.records)
       actor.continue(zone)
     }
-    InsertRecord(reply_to:, record:) -> {
-      let entries = domain_entries(zone, record.name)
-      let entry = records.record_to_entry(record)
-      let type_ = records.entry_type(entry)
-      let conflict =
-        list.any(entries, fn(current) {
-          let current_type = records.entry_type(current)
-          type_ == current_type
-          || type_ == records.Cname
-          || current_type == records.Cname
-        })
-      case conflict {
-        True -> {
-          process.send(reply_to, Error(Conflict))
-          actor.continue(zone)
-        }
-        False ->
-          commit_domain(
-            zone,
-            record.name,
-            list.append(entries, [entry]),
-            reply_to,
-          )
-      }
-    }
-    UpdateRecord(reply_to:, record:) -> {
-      let replacement = records.record_to_entry(record)
-      let type_ = records.entry_type(replacement)
-      let #(found, entries) =
-        list.map_fold(
-          domain_entries(zone, record.name),
-          False,
-          fn(found, entry) {
-            case records.entry_type(entry) == type_ {
-              True -> #(True, replacement)
-              False -> #(found, entry)
-            }
-          },
-        )
-      case found {
-        True -> commit_domain(zone, record.name, entries, reply_to)
-        False -> {
-          process.send(reply_to, Error(NotFound))
-          actor.continue(zone)
-        }
-      }
-    }
-    DeleteRecord(name:, type_:, reply_to:) -> {
-      let entries =
-        domain_entries(zone, name)
-        |> list.filter(fn(entry) {
-          dns.from_record_type(records.entry_type(entry)) != type_
-        })
-      commit_domain(zone, name, entries, reply_to)
-    }
     InsertDomain(reply_to:, name:, entries:) -> {
-      case list.any(zone.records, fn(record) { record.name == name }) {
+      let normalized = record.normalize_name(name)
+
+      case
+        list.any(zone.records, fn(local_record) {
+          local_record.name == normalized
+        })
+      {
         True -> {
           process.send(reply_to, Error(Conflict))
           actor.continue(zone)
@@ -271,23 +187,15 @@ fn handle_message(zone: Zone, message: Message) -> actor.Next(Zone, Message) {
   }
 }
 
-fn domain_entries(zone: Zone, name: String) -> List(records.RecordEntry) {
-  list.filter_map(zone.records, fn(record) {
-    case record.name == name {
-      True -> Ok(records.record_to_entry(record))
-      False -> Error(Nil)
-    }
-  })
-}
-
 fn apply_domain_put(
   zone: Zone,
   reply_to: process.Subject(Result(Nil, ZoneError)),
   name: String,
-  entries: List(records.RecordEntry),
+  entries: List(record.RecordEntry),
 ) -> actor.Next(Zone, Message) {
   let has_cname =
-    list.any(entries, fn(entry) { records.entry_type(entry) == records.Cname })
+    list.any(entries, fn(entry) { record.entry_type(entry) == record.Cname })
+
   case has_cname && list.length(entries) != 1 {
     True -> {
       process.send(reply_to, Error(CnameConflict))
@@ -300,29 +208,40 @@ fn apply_domain_put(
 fn commit_domain(
   zone: Zone,
   name: String,
-  entries: List(records.RecordEntry),
+  entries: List(record.RecordEntry),
   reply_to: process.Subject(Result(Nil, ZoneError)),
 ) -> actor.Next(Zone, Message) {
-  let domain_records = list.map(entries, records.entry_to_record(name, _))
+  let domain_records = list.map(entries, record.from_entry(_, name))
+
   let committed = {
     use _validated <- result.try(
-      list.try_each(domain_records, fn(record) {
-        records.validate(record) |> result.map_error(InvalidRecord(name, _))
+      list.try_each(domain_records, fn(local_record) {
+        record.validate(local_record)
+        |> result.map_error(InvalidRecord(name, _))
       }),
     )
+
+    let domain_records = list.map(domain_records, record.normalize)
+    let name = record.normalize_name(name)
+    let retained_records =
+      list.filter(zone.records, fn(local_record) { local_record.name != name })
+
     let updated =
       Zone(
         ..zone,
         serial: next_serial(zone.serial),
-        records: list.filter(zone.records, fn(record) { record.name != name })
-          |> list.append(domain_records),
+        records: list.append(retained_records, domain_records),
       )
+
     use _written <- result.try(write(updated) |> result.map_error(WriteFailure))
-    Ok(updated)
+
+    Ok(#(updated, domain_records))
   }
+
   case committed {
-    Ok(updated) -> {
+    Ok(#(updated, domain_records)) -> {
       cache.replace_domain(name, domain_records)
+
       process.send(reply_to, Ok(Nil))
       actor.continue(updated)
     }
@@ -339,30 +258,34 @@ pub type Zone {
     serial: Int,
     ttl: Int,
     soa_minimum: Int,
-    records: List(records.Record),
+    records: List(record.Record),
   )
 }
 
-fn next_serial(current: Int) -> Int {
-  let #(y, m, d) = erlang_date()
+const serial_modulus = 4_294_967_296
 
-  let today_base = { y * 10_000 + m * 100 + d } * 100
-  case current >= today_base && current < today_base + 100 {
-    True -> current + 1
-    False -> today_base
+const serial_half_range = 2_147_483_648
+
+fn next_serial(current: Int) -> Int {
+  let #(year, month, day) = erlang_date()
+  let date_serial = { year * 10_000 + month * 100 + day } * 100
+
+  advance_serial(current, date_serial)
+}
+
+fn advance_serial(current: Int, date_serial: Int) -> Int {
+  let current = int.bitwise_and(current, 0xFFFFFFFF)
+  let date_serial = int.bitwise_and(date_serial, 0xFFFFFFFF)
+  let distance = { date_serial - current + serial_modulus } % serial_modulus
+
+  case distance > 0 && distance < serial_half_range {
+    True -> date_serial
+    False -> { current + 1 } % serial_modulus
   }
 }
 
 @external(erlang, "erlang", "date")
 fn erlang_date() -> #(Int, Int, Int)
-
-pub fn record_type(record: records.Record) -> dns.Type {
-  case record {
-    records.ARecord(..) -> dns.A
-    records.AaaaRecord(..) -> dns.Aaaa
-    records.CnameRecord(..) -> dns.Cname
-  }
-}
 
 pub type ReadError {
   IoError(simplifile.FileError)
@@ -393,6 +316,9 @@ pub fn read(path: String, default_ttl: Int) -> Result(Zone, ReadError) {
       records: [],
     ),
   )
+  |> result.map(fn(zone) {
+    Zone(..zone, records: list.map(zone.records, record.normalize))
+  })
 }
 
 fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
@@ -415,7 +341,7 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
             }
             |> string.trim
             |> string.split(" ")
-            |> list.filter(fn(x) { !string.is_empty(x) })
+            |> list.filter(fn(part) { !string.is_empty(part) })
 
           case parts {
             ["$TTL", value] -> {
@@ -450,17 +376,18 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
             [domain, ttl, "IN", type_, value] -> {
               case int.parse(ttl) {
                 Ok(ttl) -> {
-                  use maybe <- result.try(parse_record(
+                  use parsed_record <- result.try(parse_record(
                     domain,
                     ttl,
                     type_,
                     value,
                   ))
 
-                  let records = case maybe {
-                    option.Some(record) -> [record, ..zone.records]
+                  let records = case parsed_record {
+                    option.Some(local_record) -> [local_record, ..zone.records]
                     option.None -> zone.records
                   }
+
                   parse(remaining, Zone(..zone, records:))
                 }
                 Error(Nil) -> Error(ParseError("invalid record ttl specified"))
@@ -468,17 +395,18 @@ fn parse(data: String, zone: Zone) -> Result(Zone, ReadError) {
             }
 
             [domain, "IN", type_, value] -> {
-              use maybe <- result.try(parse_record(
+              use parsed_record <- result.try(parse_record(
                 domain,
                 zone.ttl,
                 type_,
                 value,
               ))
 
-              let records = case maybe {
-                option.Some(record) -> [record, ..zone.records]
+              let records = case parsed_record {
+                option.Some(local_record) -> [local_record, ..zone.records]
                 option.None -> zone.records
               }
+
               parse(remaining, Zone(..zone, records:))
             }
 
@@ -495,20 +423,20 @@ pub fn parse_record(
   ttl: Int,
   type_: String,
   value: String,
-) -> Result(option.Option(records.Record), ReadError) {
+) -> Result(option.Option(record.Record), ReadError) {
   case type_ {
     "A" ->
       case ip.ipv4_from_string(value) {
-        Ok(ip) -> Ok(option.Some(records.ARecord(name: domain, ttl:, ip:)))
+        Ok(ip) -> Ok(option.Some(record.ARecord(name: domain, ttl:, ip:)))
         Error(Nil) -> Error(ParseError("invalid ip provided"))
       }
     "AAAA" ->
       case ip.ipv6_from_string(value) {
-        Ok(ip) -> Ok(option.Some(records.AaaaRecord(name: domain, ttl:, ip:)))
+        Ok(ip) -> Ok(option.Some(record.AaaaRecord(name: domain, ttl:, ip:)))
         Error(Nil) -> Error(ParseError("invalid ip provided"))
       }
     "CNAME" ->
-      Ok(option.Some(records.CnameRecord(name: domain, ttl:, target: value)))
+      Ok(option.Some(record.CnameRecord(name: domain, ttl:, target: value)))
     _unsupported_type -> Ok(option.None)
   }
 }
@@ -522,16 +450,21 @@ fn write(zone: Zone) -> Result(Nil, simplifile.FileError) {
         <> int.to_string(zone.serial)
         <> " 3600 900 604800 "
         <> int.to_string(zone.soa_minimum),
-      ..list.map(zone.records, with: fn(record) {
-        let prefix = case record.ttl == zone.ttl {
-          True -> record.name <> " IN "
-          False -> record.name <> " " <> int.to_string(record.ttl) <> " IN "
+      ..list.map(zone.records, with: fn(local_record) {
+        let prefix = case local_record.ttl == zone.ttl {
+          True -> local_record.name <> " IN "
+          False ->
+            local_record.name
+            <> " "
+            <> int.to_string(local_record.ttl)
+            <> " IN "
         }
-        case record {
-          records.ARecord(ip:, ..) -> prefix <> "A " <> ip.ipv4_to_string(ip)
-          records.AaaaRecord(ip:, ..) ->
+
+        case local_record {
+          record.ARecord(ip:, ..) -> prefix <> "A " <> ip.ipv4_to_string(ip)
+          record.AaaaRecord(ip:, ..) ->
             prefix <> "AAAA " <> ip.ipv6_to_string(ip)
-          records.CnameRecord(target:, ..) -> prefix <> "CNAME " <> target
+          record.CnameRecord(target:, ..) -> prefix <> "CNAME " <> target
         }
       })
     ]

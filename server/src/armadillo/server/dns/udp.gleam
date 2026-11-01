@@ -87,10 +87,10 @@ pub type Builder(state, message) {
     on_start: fn(ip.Address, Int) -> Nil,
     port: Int,
     ipv6: Bool,
-    reuseaddr: Bool,
+    reuse_address: Bool,
     interface: IpMode,
-    recbuf: Int,
-    sndbuf: Int,
+    receive_buffer: Int,
+    send_buffer: Int,
   )
 }
 
@@ -98,18 +98,7 @@ pub fn new(
   state state: state,
   handler handler: fn(state, Message(message)) -> Next(state, message),
 ) -> Builder(state, message) {
-  Builder(
-    initialise: fn(_self) { Ok(initialised(state)) },
-    handler:,
-    name: option.None,
-    on_start: fn(_address, _port) { Nil },
-    port: 0,
-    ipv6: False,
-    reuseaddr: False,
-    interface: Loopback,
-    recbuf: 10 * 1024 * 1024,
-    sndbuf: 10 * 1024 * 1024,
-  )
+  new_with_initialiser(fn(_self) { Ok(initialised(state)) }, handler)
 }
 
 pub fn new_with_initialiser(
@@ -124,10 +113,10 @@ pub fn new_with_initialiser(
     on_start: fn(_address, _port) { Nil },
     port: 0,
     ipv6: False,
-    reuseaddr: False,
+    reuse_address: False,
     interface: Loopback,
-    recbuf: 10 * 1024 * 1024,
-    sndbuf: 10 * 1024 * 1024,
+    receive_buffer: 10 * 1024 * 1024,
+    send_buffer: 10 * 1024 * 1024,
   )
 }
 
@@ -162,21 +151,21 @@ pub fn with_ipv6(builder: Builder(state, message)) -> Builder(state, message) {
 pub fn reuse_address(
   builder: Builder(state, message),
 ) -> Builder(state, message) {
-  Builder(..builder, reuseaddr: True)
+  Builder(..builder, reuse_address: True)
 }
 
 pub fn receive_buffer(
   builder: Builder(state, message),
   size: Int,
 ) -> Builder(state, message) {
-  Builder(..builder, recbuf: size)
+  Builder(..builder, receive_buffer: size)
 }
 
 pub fn send_buffer(
   builder: Builder(state, message),
   size: Int,
 ) -> Builder(state, message) {
-  Builder(..builder, sndbuf: size)
+  Builder(..builder, send_buffer: size)
 }
 
 pub fn named(
@@ -209,26 +198,26 @@ pub type Message(message) {
 pub fn start(
   builder: Builder(state, message),
 ) -> actor.StartResult(process.Subject(message)) {
-  let actor =
+  let actor_builder =
     actor.new_with_initialiser(1000, fn(_self) {
-      let user = process.new_subject()
+      let user_subject = process.new_subject()
 
       let options = udp_settings(builder)
 
       case open(builder.port, options) {
         Ok(socket) -> {
           case sockname(socket) {
-            Ok(#(addr, port)) -> builder.on_start(addr, port)
+            Ok(#(address, port)) -> builder.on_start(address, port)
             Error(_socket_error) -> Nil
           }
 
           use Initialised(state, user_selector) <- result.try(
-            builder.initialise(user),
+            builder.initialise(user_subject),
           )
 
           let selector =
             process.new_selector()
-            |> process.select(user)
+            |> process.select(user_subject)
             |> process.map_selector(User)
             |> process.merge_selector(udp_selector())
 
@@ -239,7 +228,7 @@ pub fn start(
               |> process.merge_selector(selector)
             option.None -> selector
           })
-          |> actor.returning(user)
+          |> actor.returning(user_subject)
           |> Ok
         }
         Error(reason) ->
@@ -250,30 +239,11 @@ pub fn start(
       let next = exception.rescue(fn() { builder.handler(state.user, message) })
 
       case next, message {
-        Ok(Continue(user, selector)), User(..) -> {
-          let next = actor.continue(State(..state, user:))
-          case selector {
-            option.Some(selector) -> {
-              process.map_selector(selector, User)
-              |> process.merge_selector(state.selector)
-              |> actor.with_selector(next, _)
-            }
-            option.None -> next
-          }
-        }
+        Ok(Continue(user, selector)), User(..) ->
+          continue_actor(state, user, selector)
         Ok(Continue(user, selector)), Packet(..) -> {
           case set_active(state.socket) {
-            Ok(Nil) -> {
-              let next = actor.continue(State(..state, user:))
-              case selector {
-                option.Some(selector) -> {
-                  process.map_selector(selector, User)
-                  |> process.merge_selector(state.selector)
-                  |> actor.with_selector(next, _)
-                }
-                option.None -> next
-              }
-            }
+            Ok(Nil) -> continue_actor(state, user, selector)
             Error(reason) ->
               actor.stop_abnormal(
                 "Failed to set udp socket as active. " <> describe_error(reason),
@@ -291,17 +261,34 @@ pub fn start(
             exception.Exited(_dynamic) ->
               "A process exited in the handler. This can be caused by calling the erlang:exit/1 function."
           }
+
           actor.stop_abnormal(reason)
         }
       }
     })
 
-  let actor = case builder.name {
-    option.Some(name) -> actor.named(actor, name)
-    option.None -> actor
+  let actor_builder = case builder.name {
+    option.Some(name) -> actor.named(actor_builder, name)
+    option.None -> actor_builder
   }
 
-  actor.start(actor)
+  actor.start(actor_builder)
+}
+
+fn continue_actor(
+  state: State(state, message),
+  user: state,
+  selector: option.Option(process.Selector(message)),
+) -> actor.Next(State(state, message), Message(message)) {
+  let next = actor.continue(State(..state, user:))
+
+  case selector {
+    option.Some(selector) ->
+      process.map_selector(selector, User)
+      |> process.merge_selector(state.selector)
+      |> actor.with_selector(next, _)
+    option.None -> next
+  }
 }
 
 pub fn supervised(
@@ -321,8 +308,8 @@ fn udp_settings(builder: Builder(state, message)) -> List(Option) {
 
   let options = [
     Ip(interface),
-    ReceiveBuffer(builder.recbuf),
-    SendBuffer(builder.sndbuf),
+    ReceiveBuffer(builder.receive_buffer),
+    SendBuffer(builder.send_buffer),
     ActiveMode(Once),
   ]
 
@@ -331,7 +318,7 @@ fn udp_settings(builder: Builder(state, message)) -> List(Option) {
     False -> options
   }
 
-  case builder.reuseaddr {
+  case builder.reuse_address {
     True -> [ReuseAddress, ..options]
     False -> options
   }
@@ -378,6 +365,7 @@ fn coerce_socket_message(record: dynamic.Dynamic) -> Message(message)
 pub type SocketError {
   NotOwner
   Timeout
+  Closed
   BadArgument
 
   Eaddrinuse
@@ -463,6 +451,7 @@ pub fn describe_error(error: SocketError) -> String {
   case error {
     NotOwner -> "Socket not owned by the process trying to use it"
     Timeout -> "Operation timed out"
+    Closed -> "Socket is closed"
     BadArgument -> "Bad argument (probably invalid port number)"
     Eaddrinuse -> "Address already in use"
     Eaddrnotavail -> "Cannot assign requested address"

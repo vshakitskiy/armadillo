@@ -38,24 +38,28 @@ pub fn handler(
   handler: fn(wisp.Request) -> wisp.Response,
   secret_key_base: String,
 ) -> fn(request.Request(ewe.Connection)) -> response.Response(ewe.Body) {
-  fn(req: request.Request(ewe.Connection)) {
-    let connection = req.body
-    let wisp_req =
-      internal.make_connection(ewe_body_reader(req), secret_key_base)
-      |> request.set_body(req, _)
+  fn(request: request.Request(ewe.Connection)) {
+    let connection = request.body
+    let wisp_request =
+      internal.make_connection(ewe_body_reader(request), secret_key_base)
+      |> request.set_body(request, _)
 
     use <- exception.defer(fn() {
-      let assert Ok(_deleted_files) = wisp.delete_temporary_files(wisp_req)
+      let assert Ok(_deleted_files) = wisp.delete_temporary_files(wisp_request)
     })
 
-    handler(wisp_req)
+    handler(wisp_request)
     |> ewe_response(connection)
   }
 }
 
-fn ewe_body_reader(req: request.Request(ewe.Connection)) -> internal.Reader {
+fn ewe_body_reader(
+  request: request.Request(ewe.Connection),
+) -> internal.Reader {
   fn(size) {
-    case ewe.read_body_chunk(req, max_chunk_bytes: size, limit: max_body_size) {
+    case
+      ewe.read_body_chunk(request, max_chunk_bytes: size, limit: max_body_size)
+    {
       Ok(ewe.Chunk(data:, request:)) ->
         Ok(internal.Chunk(data, ewe_body_reader(request)))
       Ok(ewe.Done(..)) -> Ok(internal.ReadingFinished)
@@ -65,26 +69,26 @@ fn ewe_body_reader(req: request.Request(ewe.Connection)) -> internal.Reader {
 }
 
 fn ewe_response(
-  resp: response.Response(wisp.Body),
+  response: response.Response(wisp.Body),
   connection: ewe.Connection,
 ) -> response.Response(ewe.Body) {
-  case resp.body {
-    wisp.Text(text) -> response.set_body(resp, ewe.Text(text))
-    wisp.Bytes(bytes) -> response.set_body(resp, ewe.Bytes(bytes))
+  case response.body {
+    wisp.Text(text) -> response.set_body(response, ewe.Text(text))
+    wisp.Bytes(bytes) -> response.set_body(response, ewe.Bytes(bytes))
     wisp.File(path:, offset:, limit:) ->
-      ewe_send_file(resp, connection, path, offset, limit)
+      ewe_send_file(response, connection, path, offset, limit)
   }
 }
 
 fn ewe_send_file(
-  resp: response.Response(wisp.Body),
+  response: response.Response(wisp.Body),
   connection: ewe.Connection,
   path: String,
   offset: Int,
   limit: option.Option(Int),
 ) -> response.Response(ewe.Body) {
   case ewe.file(connection, path, offset: option.Some(offset), limit:) {
-    Ok(file) -> response.set_body(resp, file)
+    Ok(file) -> response.set_body(response, file)
     Error(error) -> {
       string.inspect(error)
       |> wisp.log_error

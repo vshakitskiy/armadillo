@@ -13,7 +13,8 @@ import gleam/otp/static_supervisor as supervisor
 import gleam/result
 import wisp
 
-const name = "  __   ____  _  _   __   ____  __  __    __     __  
+const banner =
+  "  __   ____  _  _   __   ____  __  __    __     __
  / _\\ (  _ \\( \\/ ) / _\\ (    \\(  )(  )  (  )   /  \\ 
 /    \\ )   // \\/ \\/    \\ ) D ( )( / (_/\\/ (_/\\(  O )
 \\_/\\_/(__\\_)\\_)(_/\\_/\\_/(____/(__)\\____/\\____/ \\__/"
@@ -33,11 +34,12 @@ pub fn start(
   let zone_path = envoy.get("ZONE_FILE") |> result.unwrap("/data/local.zone")
 
   clear_terminal()
-  io.println("\n\n" <> name <> "\n\n")
+  io.println("\n\n" <> banner <> "\n\n")
 
   wisp.configure_logger()
 
-  let ttl = env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
+  let default_ttl =
+    env.get_or("DNS_TTL", parse: int.parse, or: 300, log: "300 seconds")
 
   cache.init()
 
@@ -45,7 +47,7 @@ pub fn start(
   let zone_name = process.new_name("zone_worker")
 
   supervisor.new(supervisor.OneForOne)
-  |> supervisor.add(zone.worker(zone_name, zone_path, ttl))
+  |> supervisor.add(zone.worker(zone_name, zone_path, default_ttl))
   |> supervisor.add(cache.worker())
   |> supervisor.add(dns.supervised(resolver_name))
   |> supervisor.add(api.supervised(process.named_subject(zone_name)))
