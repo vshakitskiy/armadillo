@@ -1,5 +1,6 @@
-## Unreleased
+## v2.1.0 - 02.11.2026
 
+- Serve the web UI at the root URL
 - Support wildcard domain names with IPv4, IPv6 and alias records
 - Resolve local aliases through the upstream DNS server when the target is not
   cached

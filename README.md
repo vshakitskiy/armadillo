@@ -20,7 +20,7 @@ during query handling.
 
 ## Container image
 
-Available at `ghcr.io/vshakitskiy/armadillo:v2.0.0`.
+Available at `ghcr.io/vshakitskiy/armadillo:v2.1.0`.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -82,7 +82,7 @@ sudo setcap cap_net_bind_service=+ep /path/to/beam.smp
 
 ## Resolving with VPN
 
-> Personal notes for if I run into DNS issues with a VPN again.
+> This is a personal notes for if I run into DNS issues with a VPN again!
 
 When running a VPN like vless in proxy or tun mode, it's very important to make 
 sure the VPN resolves domains via the correct DNS. Asuming the router's IP 

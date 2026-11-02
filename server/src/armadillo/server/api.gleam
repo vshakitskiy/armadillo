@@ -120,6 +120,11 @@ fn handler(
     _method, _segments -> {
       case wisp.priv_directory("server") {
         Ok(priv) -> {
+          let request = case request.path {
+            "/" -> request.Request(..request, path: "/index.html")
+            _path -> request
+          }
+
           use <- wisp.serve_static(request, under: "/", from: priv)
           wisp.not_found()
         }
