@@ -48,3 +48,5 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=armadillo
+          cache-to: type=gha,scope=armadillo,mode=max

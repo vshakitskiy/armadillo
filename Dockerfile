@@ -3,20 +3,23 @@ ARG GLEAM_VERSION=v1.19.2
 
 FROM ghcr.io/gleam-lang/gleam:${GLEAM_VERSION}-scratch AS gleam
 
-FROM erlang:${ERLANG_VERSION}-alpine AS client-build
+FROM erlang:${ERLANG_VERSION}-alpine AS build-tools
 COPY --from=gleam /bin/gleam /bin/gleam
+COPY docker/hex-retry.sh /usr/local/bin/hex-retry
+RUN chmod +x /usr/local/bin/hex-retry
+
+FROM build-tools AS client-build
 COPY shared/ /app/shared/
 COPY client/ /app/client/
 WORKDIR /app/client
-RUN gleam run -m lustre/dev build
+RUN hex-retry gleam run -m lustre/dev build
 
-FROM erlang:${ERLANG_VERSION}-alpine AS server-build
-COPY --from=gleam /bin/gleam /bin/gleam
+FROM build-tools AS server-build
 COPY shared/ /app/shared/
 COPY server/ /app/server/
 COPY --from=client-build /app/client/dist/ /app/server/priv/
 WORKDIR /app/server
-RUN gleam export erlang-shipment
+RUN hex-retry gleam export erlang-shipment
 
 FROM erlang:${ERLANG_VERSION}-alpine
 RUN apk add --no-cache libcap \
